@@ -1,0 +1,102 @@
+$ C:\Users\ummea\.virtualenvs\course-organizer\Scripts\python.exe -m course_organizer.labs.lab06_governed_runtime
+
+cwd     : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+exit    : 0
+
+------------------------------------------------------------------------------
+stdout
+------------------------------------------------------------------------------
+Lab 6: Run the agent inside a controlled runtime with a full audit log.
+Deliverable: Runtime wrapping the agent: budgets, gates, checkpoint/resume, audit log.
+Accept: Every action is logged with inputs/outputs; a crashed run resumes from its last checkpoint.
+Pitfall: Log inputs and outputs, not just messages; checkpoint before risky steps or resume loses state.
+==============================================================================
+
+-- Pseudocode the runtime implements (doc order vs corrected order) --
+DOC:
+   run = Runtime(budget=B, gates=[publish])
+   for step in agent.loop():
+       audit.log(step.intent, step.action, step.result)
+       if step.risky: wait_for_approval(step)
+       checkpoint(run.state)
+RUNTIME (pitfall applied):
+   1. reserve budget (refuse before the action)
+   2. check wall clock for an overrun already spent
+   3. if step.risky: checkpoint(run.state)  <- pitfall: before, not after
+   4. if step.risky: wait_for_approval(step)
+   5. run the step
+   6. charge what it actually cost
+   7. audit.log(inputs, outputs)  <- pitfall: inputs AND outputs
+   8. checkpoint(run.state)
+
+-- Uninterrupted governed run --
+  status      : completed
+  steps       : ('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+  gate answers: ('publish: approved by course_faculty -- demo approval',)
+  audit       : 5 record(s), fingerprint 384379b77a777e0f
+  checkpoints : 6
+  budget      :
+     connector_calls          1/12  refused=0
+     steps                    5/24  refused=0
+     records_read           16/200  refused=0
+     wall_clock_ms        5/120000  refused=0
+     skill_calls               1/8  refused=0
+     llm_calls                 1/8  refused=0
+     tool_calls               2/12  refused=0
+     risky_steps               1/4  refused=0
+
+-- Gate refusal (publish is a hard stop) --
+  status      : stopped
+  steps       : ('read_notes', 'draft_plan', 'draft_grades')
+  publish ran : False
+  gate answer : ('publish: refused by course_faculty -- the CS201 rubric needs a second look before grades go live',)
+
+-- Budget refusal (steps=3) --
+  status      : stopped
+  steps       : ('read_notes', 'draft_plan', 'draft_grades')
+  escalated   : True
+
+-- Crash and resume (two real processes) --
+  crash exit=9 (expected 9)
+    resumed ran    : ('report',)
+    resumed skipped: ('read_notes', 'draft_plan', 'draft_grades', 'publish')
+    publish reran  : False; gate asked again: False
+    ok records with inputs+outputs: 5; missing: 0
+    audit chain    : 5 record(s), verified=True, fingerprint eab04a01d1146831
+
+-- Acceptance checks --
+  [PASS]  1. clean_run_completes_every_step
+         status=completed, ran=('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+  [PASS]  2. the_publish_step_is_the_gated_one
+         gate answers: ('publish: approved by course_faculty -- demo approval',)
+  [PASS]  3. every_action_logged_with_inputs_and_outputs
+         5/5 ok record(s) carry both; 5 step(s) expected
+  [PASS]  4. every_record_carries_the_document_triple
+         audit.log(step.intent, step.action, step.result): intent and action present on 5/5 record(s)
+  [PASS]  5. the_log_is_not_merely_messages
+         no record is a bare message; inputs and outputs are required fields
+  [PASS]  6. crash_really_killed_the_process
+         child exit code 9 (os._exit(9) expected)
+  [PASS]  7. resume_runs_only_the_unfinished_step
+         resumed ran ('report',); skipped ('read_notes', 'draft_plan', 'draft_grades', 'publish')
+  [PASS]  8. resume_does_not_repeat_the_risky_publish
+         publish executed in the resumed process: False
+  [PASS]  9. resume_does_not_re_ask_the_gate
+         gate consulted again on resume: False
+  [PASS] 10. audit_chain_survives_the_crash
+         5 record(s) across both processes, chain verified=True, fingerprint eab04a01d1146831
+  [PASS] 11. budget_is_enforced_before_the_action
+         status=stopped, steps spent=3/3, refusals=1, escalated=True
+  [PASS] 12. budget_refusal_stops_before_the_over_limit_step
+         budgeted run executed ('read_notes', 'draft_plan', 'draft_grades')
+  [PASS] 13. gate_is_a_hard_stop
+         status=stopped, ran=('read_notes', 'draft_plan', 'draft_grades'), publish outputs={}
+  [PASS] 14. refusal_is_logged_with_who_and_what
+         record outcome=refused, decided_by=course_faculty, inputs recorded=True
+  [PASS] 15. checkpoint_written_before_the_risky_step
+         1 gated record(s), each naming the pre-step checkpoint: ['000000000004-b612ca29bb5e']; 6 checkpoint(s) written by the run
+  [PASS] 16. audit_chain_verifies
+         fingerprint 384379b77a777e0f over 5 record(s)
+
+==============================================================================
+OVERALL: PASS (16/16 checks)

@@ -1,0 +1,628 @@
+Evidence - lab07_node_graph.ipynb
+======================
+
+Notebook : notebooks/lab07_node_graph.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 36 cells, 16 code, 16 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 7 - Agentic Node Graph: the full pipeline
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+import sys
+from pathlib import Path
+
+ROOT = Path.cwd().resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from course_organizer.labs import lab07_node_graph as lab07
+
+print("python  :", sys.version.split()[0])
+print("package :", ROOT / "src" / "course_organizer")
+
+python  : 3.14.7
+package : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer
+
+
+## The pitfall is the specification
+
+## 1. The document, quoted from the module that asserts it
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+from course_organizer.graph import (
+    APPROVING_DECISIONS,
+    DOC_BACK_EDGE,
+    DOC_CHECKS,
+    DOC_NODE_CHAIN,
+    GATE_ROUTES,
+    MAX_ATTEMPTS,
+    RECURSION_BACKSTOP,
+    SPECIALIST_NAMES,
+    VALIDATE_ROUTES,
+)
+from course_organizer.graph.specialists import (
+    CRITERION_WEIGHTS,
+    SHINGLE_WIDTH,
+    SIMILARITY_FLAG_THRESHOLD,
+)
+
+print("node chain (doc 2.10) :", " -> ".join(DOC_NODE_CHAIN))
+print("back-edge             :", " ".join(DOC_BACK_EDGE))
+print("validate routes       :", VALIDATE_ROUTES)
+print("gate routes           :", GATE_ROUTES)
+print("approving decisions   :", APPROVING_DECISIONS)
+print("retry bound           :", MAX_ATTEMPTS)
+print("recursion backstop    :", RECURSION_BACKSTOP, "(must never fire)")
+print()
+print("doc 2.7's four checks, verbatim:")
+for check in DOC_CHECKS:
+    print("   ", check)
+print()
+print("similarity flag threshold :", SIMILARITY_FLAG_THRESHOLD)
+print("shingle width (words)     :", SHINGLE_WIDTH)
+print("rubric criterion weights  :", CRITERION_WEIGHTS)
+print("specialists               :", len(SPECIALIST_NAMES))
+
+node chain (doc 2.10) : ingest -> plan -> workers -> validate -> assemble -> gate -> publish
+back-edge             : validate workers
+validate routes       : {'pass': 'assemble', 'fail': 'workers', 'escalate': 'escalate'}
+gate routes           : {'approved': 'publish', 'refused': 'escalate'}
+approving decisions   : ('approve', 'edit', 'override')
+retry bound           : 3
+recursion backstop    : 32 (must never fire)
+
+doc 2.7's four checks, verbatim:
+    draft_grade_within_rubric_maximum
+    late_submissions_flagged_accurately
+    similarity_score_attached
+    no_grade_published_without_faculty_approval
+
+similarity flag threshold : 0.3
+shingle width (words)     : 3
+rubric criterion weights  : (0.5, 0.35, 0.15)
+specialists               : 6
+
+
+## 2. The compiled topology, read off the graph
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+import tempfile
+
+from course_organizer.graph import (
+    build_run_context,
+    compiled_nodes,
+    topology_lines,
+)
+
+work = Path(tempfile.mkdtemp(prefix="lab07_nb_"))
+ctx = build_run_context("notebook", course_code="CS201", output_dir=work / "inspect")
+
+print("compiled nodes:", compiled_nodes(ctx))
+print()
+for line in topology_lines(ctx):
+    print(" ", line)
+
+compiled nodes: ['__end__', '__start__', 'assemble', 'escalate', 'gate', 'ingest', 'plan', 'publish', 'validate', 'workers']
+
+  compiled edges (source -> target, conditional):
+    [edge] __start__ -> ingest
+    [edge] assemble -> gate
+    [edge] escalate -> __end__
+    [cond] gate -> escalate
+    [cond] gate -> publish
+    [edge] ingest -> plan
+    [edge] plan -> workers
+    [edge] publish -> __end__
+    [cond] validate -> assemble
+    [cond] validate -> escalate
+    [cond] validate -> workers
+    [edge] workers -> validate
+
+
+### The detail that makes the loop a loop
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+from course_organizer.graph import graph_edges, inspect_graph
+
+edges = graph_edges(inspect_graph(ctx))
+pairs = {(src, dst) for src, dst, _conditional in edges}
+conditional_pairs = {(src, dst) for src, dst, c in edges if c}
+
+print(f"{len(edges)} compiled edge(s):")
+for src, dst, conditional in edges:
+    kind = "cond" if conditional else "edge"
+    print(f"  [{kind}] {src} -> {dst}")
+print()
+print("workers -> validate present      :", ("workers", "validate") in pairs)
+print("validate -> workers present      :", ("validate", "workers") in conditional_pairs)
+print("escalate reaches __end__         :", ("escalate", "__end__") in pairs)
+
+12 compiled edge(s):
+  [edge] __start__ -> ingest
+  [edge] assemble -> gate
+  [edge] escalate -> __end__
+  [cond] gate -> escalate
+  [cond] gate -> publish
+  [edge] ingest -> plan
+  [edge] plan -> workers
+  [edge] publish -> __end__
+  [cond] validate -> assemble
+  [cond] validate -> escalate
+  [cond] validate -> workers
+  [edge] workers -> validate
+
+workers -> validate present      : True
+validate -> workers present      : True
+escalate reaches __end__         : True
+
+
+## 3. The six Phase-A specialists live inside `workers`
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+from course_organizer.graph import SPECIALIST_INTENTS
+
+for position, (name, intent) in enumerate(zip(SPECIALIST_NAMES, SPECIALIST_INTENTS), 1):
+    print(f"  {position}. {name}")
+    print(f"      {intent}")
+
+  1. Notes Repository Agent
+      ('w1', 'Notes Repository Agent', 'read the current notes for every unit and keep their version history', 'every unit has at least one current note')
+  2. Assignment Distribution Agent
+      ('w2', 'Assignment Distribution Agent', 'distribute only faculty-approved assignment briefs and rubrics', 'no brief is distributed without a named approver')
+  3. Submission Collection Agent
+      ('w3', 'Submission Collection Agent', 'collect submissions and derive lateness without altering timestamps', 'no submission timestamp is altered')
+  4. Plagiarism/Similarity Agent
+      ('w4', 'Plagiarism/Similarity Agent', 'attach a similarity score and flag high cases for review, never decide', 'every graded submission carries a similarity score')
+  5. Grading Assistance Agent
+      ('w5', 'Grading Assistance Agent', 'draft marks against the faculty-approved rubric, leaving approval to a human', 'no draft grade exceeds the rubric maximum')
+  6. Project Milestone Tracking Agent
+      ('w6', 'Project Milestone Tracking Agent', 'track project milestones with faculty-approved due dates', 'every milestone has a due date and an expected deliverable')
+
+
+## 4. Doc 2.7's four validation checks
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+from course_organizer.graph import CheckContext, DraftGradeRow
+from course_organizer.graph.validation import validate
+
+def row(**overrides):
+    """A grade row with sensible defaults, so each demo varies one field."""
+    base = dict(
+        submission_id="S001",
+        student_name="A Student",
+        assignment_id="A1",
+        awarded_marks=15.0,
+        max_marks=20.0,
+        similarity_score=0.05,
+        late=False,
+    )
+    base.update(overrides)
+    return DraftGradeRow(**base)
+
+passing = CheckContext(
+    grades=[row()],
+    max_marks_by_assignment={"A1": 20.0},
+    late_by_submission={"S001": 3600},
+)
+report = validate(passing, attempt=1)
+print("passed      :", report.passed)
+print("checks run  :", report.checks_run)
+print("failing     :", report.failing)
+print("diagnosis   :", report.diagnosis or "(none)")
+
+passed      : False
+checks run  : ['draft_grade_within_rubric_maximum', 'late_submissions_flagged_accurately', 'similarity_score_attached', 'no_grade_published_without_faculty_approval']
+failing     : ['late_submissions_flagged_accurately']
+diagnosis   : validation failed 1 of 4 check(s): late_submissions_flagged_accurately. late_submissions_flagged_accurately: S001 is late by the store (3600s) but the grade says on time. To clear this: re-read the submission timestamps from the store; doc 2.4 forbids altering them, so the flags move, not the timestamps.
+
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+failing = CheckContext(
+    grades=[row(awarded_marks=22.0)],
+    max_marks_by_assignment={"A1": 20.0},
+    late_by_submission={"S001": 3600},
+)
+bad = validate(failing, attempt=2)
+print("passed      :", bad.passed)
+print("failing     :", bad.failing)
+print()
+print("diagnosis, as the faculty member would read it:")
+print(bad.diagnosis)
+
+passed      : False
+failing     : ['draft_grade_within_rubric_maximum', 'late_submissions_flagged_accurately']
+
+diagnosis, as the faculty member would read it:
+Attempt 2 validation failed 2 of 4 check(s): draft_grade_within_rubric_maximum, late_submissions_flagged_accurately. draft_grade_within_rubric_maximum: S001 was awarded 22 against a rubric maximum of 20 for A1. late_submissions_flagged_accurately: S001 is late by the store (3600s) but the grade says on time. To clear this: re-score the affected submission(s) against the faculty-approved rubric, or raise the rubric maximum itself -- the second needs a faculty decision recorded first; re-read the submission timestamps from the store; doc 2.4 forbids altering them, so the flags move, not the timestamps.
+
+
+## 5. The similarity measure is a real measurement
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+from course_organizer.graph import run_pipeline
+
+runs_root = work / "runs"
+clean = run_pipeline(
+    course_code="CS201",
+    run_id="clean",
+    root=runs_root,
+    output_dir=runs_root / "clean",
+)
+
+scores = clean.state["similarity_scores"]
+against = clean.state["similarity_against"]
+print(f"{len(scores)} submission(s) measured; flags at >= {SIMILARITY_FLAG_THRESHOLD}:")
+print()
+print(f"  {'submission':<14} {'score':>6}  {'against':<14} flagged")
+for grade in clean.state["draft_grades"]:
+    sid = grade.submission_id
+    score = scores.get(sid)
+    peer = against.get(sid) or "-"
+    shown = "n/a" if score is None else f"{score:.3f}"
+    print(f"  {sid:<14} {shown:>6}  {peer:<14} {grade.similarity_flagged}")
+
+8 submission(s) measured; flags at >= 0.3:
+
+  submission      score  against        flagged
+  DS-A1-S001      1.000  DS-A1-S003     True
+  DS-A1-S002      0.006  DS-A1-S001     False
+  DS-A1-S003      1.000  DS-A1-S001     True
+  DS-A1-S004      0.000  -              False
+  DS-A2-S005      0.000  -              False
+  DS-A2-S006      0.000  -              False
+  DS-A3-S007      0.023  DS-A3-S008     False
+  DS-A3-S008      0.023  DS-A3-S007     False
+
+
+## 6. The full run, stopping at the human gate
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+print("summary :", clean.summary())
+print("nodes   :", " -> ".join(clean.nodes_ran()))
+print("status  :", clean.status.value)
+print()
+print("audit trail:")
+for entry in clean.state["audit_trail"]:
+    print(f"  {entry['node']:<10} {entry['summary']}")
+
+print()
+print("plan was locked before work:",
+      clean.nodes_ran().index("plan") < clean.nodes_ran().index("workers"))
+print("obligations locked         :", clean.state["obligation_count"])
+print("drift findings             :", len(clean.state["drift_findings"]))
+
+summary : run=clean status=draft nodes=5 attempts=1 gate=awaiting_faculty
+nodes   : ingest -> plan -> workers -> validate -> assemble
+status  : draft
+
+audit trail:
+  ingest     scope CS201 (Data Structures): 5 unit(s), 8 note(s), 10 version(s), 3 assignment(s); 7 scope check(s) passed
+  plan       locked 16 obligation(s); plan_sha256=6d88f04886fa
+  workers    pass 1: 6 specialist(s), 0 reported a problem
+  validate   pass 1: all 4 check(s) passed
+  assemble   assembled DOC-CS201-organised-course-4f12bcb7d9 (8 section(s)); drift findings: 0
+
+plan was locked before work: True
+obligations locked         : 16
+drift findings             : 0
+
+
+### What the human is asked
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+request = clean.gate_request
+print("course      :", request.course_code, request.course_name)
+print("attempt     :", request.attempt)
+print("units       :", ", ".join(request.units_covered))
+print("assignments :", ", ".join(request.assignments_included))
+print("validation  :", "passed" if request.validation.passed else "FAILED")
+print("grades      :", len(request.draft_grades))
+print("all draft   :", {g.status for g in request.draft_grades} == {"draft"})
+print("approved by :", {g.approved_by for g in request.draft_grades})
+print()
+print(f"  {'submission':<14} {'student':<16} {'awarded':>8} {'max':>6}  late  sim  flag")
+for grade in request.draft_grades:
+    sim = "n/a" if grade.similarity_score is None else f"{grade.similarity_score:.2f}"
+    print(
+        f"  {grade.submission_id:<14} {grade.student_name:<16} "
+        f"{grade.awarded_marks:>8.2f} {grade.max_marks:>6.1f}  "
+        f"{'yes' if grade.late else 'no':<4} {sim:>5}  "
+        f"{'*' if grade.similarity_flagged else ''}"
+    )
+print()
+print("flagged for review (not adjudicated):")
+for flag in request.similarity_flags:
+    print(f"  {flag['submission_id']} vs {flag['against']} = {flag['score']}")
+
+course      : CS201 Data Structures
+attempt     : 1
+units       : 1, 2, 3, 4, 5
+assignments : ASG-01, ASG-02, ASG-03
+validation  : passed
+grades      : 8
+all draft   : True
+approved by : {''}
+
+  submission     student           awarded    max  late  sim  flag
+  DS-A1-S001     Aarav Menon         15.89   20.0  no    1.00  *
+  DS-A1-S002     Diya Kulkarni        9.33   20.0  no    0.01  
+  DS-A1-S003     Kabir Shah          18.88   20.0  no    1.00  *
+  DS-A1-S004     Meera Nair          11.77   20.0  no    0.00  
+  DS-A2-S005     Rohan Pillai         8.23   20.0  no    0.00  
+  DS-A2-S006     Sara Thomas         15.56   20.0  no    0.00  
+  DS-A3-S007     Vivaan Rao          11.01   25.0  no    0.02  
+  DS-A3-S008     Ananya Bose         17.13   25.0  yes   0.02  
+
+flagged for review (not adjudicated):
+  DS-A1-S001 vs DS-A1-S003 = 1.0
+  DS-A1-S003 vs DS-A1-S001 = 1.0
+
+
+## 7. The back-edge, and the bound
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+retry = run_pipeline(
+    course_code="CS201",
+    run_id="retry",
+    root=runs_root,
+    output_dir=runs_root / "retry",
+    fail_until_attempt=2,
+)
+print("summary      :", retry.summary())
+print("nodes        :", " -> ".join(retry.nodes_ran()))
+print("workers ran  :", retry.nodes_ran().count("workers"), "time(s)")
+print()
+print("attempt log:")
+for entry in retry.state["attempt_log"]:
+    faulty = [s["step_id"] for s in entry["specialists"] if not s["ok"]]
+    print(f"  pass {entry['pass']}:", f"faulty {faulty}" if faulty else "all specialists ok")
+
+summary      : run=retry status=draft nodes=9 attempts=3 gate=awaiting_faculty
+nodes        : ingest -> plan -> workers -> validate -> workers -> validate -> workers -> validate -> assemble
+workers ran  : 3 time(s)
+
+attempt log:
+  pass 1: faulty ['w4', 'w5']
+  pass 2: faulty ['w4', 'w5']
+  pass 3: all specialists ok
+
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+exhausted = run_pipeline(
+    course_code="CS201",
+    run_id="exhaustion",
+    root=runs_root,
+    output_dir=runs_root / "exhaustion",
+    fail_until_attempt=99,
+)
+esc = exhausted.state["escalation"]
+print("summary    :", exhausted.summary())
+print("nodes      :", " -> ".join(exhausted.nodes_ran()))
+print("attempts   :", exhausted.attempts_made(), "of", MAX_ATTEMPTS)
+print("reason     :", esc.reason)
+print("raised by  :", esc.raised_by, "->", esc.escalated_to)
+print("failing    :", ", ".join(esc.failing))
+print("draft kept :", len(esc.pending_draft.get("draft_grades", [])), "grade(s)")
+print()
+print("diagnosis:")
+print(esc.diagnosis)
+
+escalate escalated to course_faculty: retry_budget_exhausted after 3 attempt(s)
+
+summary    : run=exhaustion status=escalated nodes=9 attempts=3 escalated=retry_budget_exhausted
+nodes      : ingest -> plan -> workers -> validate -> workers -> validate -> workers -> validate -> escalate
+attempts   : 3 of 3
+reason     : retry_budget_exhausted
+raised by  : validate -> course_faculty
+failing    : draft_grade_within_rubric_maximum, similarity_score_attached
+draft kept : 8 grade(s)
+
+diagnosis:
+Validation still failing after 3 of 3 permitted attempt(s); the run stopped rather than retrying forever. Attempt 3 validation failed 2 of 4 check(s): draft_grade_within_rubric_maximum, similarity_score_attached. draft_grade_within_rubric_maximum: DS-A1-S001 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S002 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S003 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S004 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A2-S005 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A2-S006 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A3-S007 was awarded 27.5 against a rubric maximum of 25 for ASG-03; DS-A3-S008 was awarded 27.5 against a rubric maximum of 25 for ASG-03. similarity_score_attached: 8 of 8 submission(s) have no similarity score: DS-A1-S001, DS-A1-S002, DS-A1-S003, DS-A1-S004, DS-A2-S005, DS-A2-S006, DS-A3-S007, DS-A3-S008. To clear this: re-score the affected submission(s) against the faculty-approved rubric, or raise the rubric maximum itself -- the second needs a faculty decision recorded first; run the similarity step for the submission(s) with no score; an absent score is not a zero score. The draft below is the version that failed, so the failing rows can be corrected without re-running.
+
+
+### The bound is not the recursion limit
+
+## 8. A human says no
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+from course_organizer.graph import DECISION_REFUSE, resume_run
+
+refusal = run_pipeline(
+    course_code="CS201",
+    run_id="refusal",
+    root=runs_root,
+    output_dir=runs_root / "refusal",
+)
+refused = resume_run("refusal", DECISION_REFUSE, root=runs_root)
+
+print("summary   :", refused.summary())
+print("status    :", refused.status.value)
+print("published :", refused.published)
+print("path      :", refused.state.get("published_path"))
+print("escalation:", refused.state["escalation"].reason)
+print("all draft :", {g.status for g in refused.state["draft_grades"]} == {"draft"})
+
+escalate escalated to course_faculty: refuse after 1 attempt(s)
+
+summary   : run=refusal status=refused nodes=7 attempts=1 escalated=refuse
+status    : refused
+published : False
+path      : None
+escalation: refuse
+all draft : True
+
+
+## 9. A suspended run survives the process
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+from course_organizer.graph import FacultyDecision, DECISION_APPROVE, load_gate_request
+
+recovered = load_gate_request("clean", root=runs_root)
+print("recovered from SQLite :", recovered is not None)
+print("grades in the request :", len(recovered.draft_grades))
+print("row type              :", type(recovered.draft_grades[0]).__name__)
+print()
+
+approved = resume_run(
+    "clean",
+    FacultyDecision(
+        decision=DECISION_APPROVE,
+        decided_by="Dr. Iyer",
+        reason="marks and flags both check out",
+    ),
+    root=runs_root,
+)
+
+print("summary after resume  :", approved.summary())
+print("nodes after resume    :", " -> ".join(approved.nodes_ran()))
+print("pre-gate nodes re-ran :", approved.nodes_ran().count("ingest"), "time(s)")
+print("published             :", approved.published)
+
+published_path = Path(approved.state["published_path"])
+body = published_path.read_text(encoding="utf-8")
+print("published file        :", published_path.name, f"({len(body)} chars)")
+print("says it is published  :", "Published: yes" in body)
+print("names the approver    :", "Dr. Iyer" in body)
+print("pure ASCII            :", all(ord(ch) < 128 for ch in body))
+
+recovered from SQLite : True
+grades in the request : 8
+row type              : DraftGradeRow
+
+summary after resume  : run=clean status=published nodes=7 attempts=1 published=C:\Users\ummea\AppData\Local\Temp\lab07_nb_0nq1di7z\runs\clean\DOC-CS201-organised-course-4f12bcb7d9.md
+nodes after resume    : ingest -> plan -> workers -> validate -> assemble -> gate -> publish
+pre-gate nodes re-ran : 1 time(s)
+published             : True
+published file        : DOC-CS201-organised-course-4f12bcb7d9.md (4695 chars)
+says it is published  : True
+names the approver    : True
+pure ASCII            : True
+
+
+## 10. The whole lab, self-checking
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+result = lab07.run_scenarios(work / "full")
+
+print("pass_all :", result.pass_all)
+print()
+for number, check in enumerate(result.checks, 1):
+    mark = "PASS" if check["passed"] else "FAIL"
+    print(f"[{mark}] {number:>2}. {check['name']}")
+    print(f"        {check['detail']}")
+print()
+print("=" * 72)
+print(f"OVERALL: {'PASS' if result.pass_all else 'FAIL'} "
+      f"({sum(1 for c in result.checks if c['passed'])}/{len(result.checks)} checks)")
+
+escalate escalated to course_faculty: retry_budget_exhausted after 3 attempt(s)
+
+escalate escalated to course_faculty: refuse after 1 attempt(s)
+
+pass_all : True
+
+[PASS]  1. every doc node is compiled into the graph
+        doc chain ingest, plan, workers, validate, assemble, gate, publish plus escalate
+[PASS]  2. the back-edge exists: validate --fail--> workers
+        compiled edges include validate -> workers (conditional)
+[PASS]  3. workers --forward--> validate, without which the loop cannot cycle
+        a conditional edge alone does not create a cycle
+[PASS]  4. the clean run executes the doc path and stops at the gate
+        nodes executed: ingest -> plan -> workers -> validate -> assemble
+[PASS]  5. the clean run stops at a real human gate
+        run=clean status=draft nodes=5 attempts=1 gate=awaiting_faculty
+[PASS]  6. all four of doc 2.7's checks ran and passed
+        4 check(s): draft_grade_within_rubric_maximum, late_submissions_flagged_accurately, similarity_score_attached, no_grade_published_without_faculty_approval
+[PASS]  7. nothing published before a human approved
+        status=draft, no published file
+[PASS]  8. every grade offered to the reviewer is still a draft
+        8 grade(s), all status=draft
+[PASS]  9. the assembled document has no drift against the locked plan
+        drift findings: 0
+[PASS] 10. the gate request carries grades, flags and the validation report
+        8 grade(s), 2 similarity flag(s)
+[PASS] 11. the plan was locked before any work began
+        16 obligation(s), plan_sha256=6d88f04886fa
+[PASS] 12. the back-edge retried and converged inside the bound
+        attempt log records passes [1, 2, 3]; converged on pass 3
+[PASS] 13. each retry re-entered workers
+        workers and validate each executed 3 time(s), once per pass, for passes [1, 2, 3]
+[PASS] 14. the bound stops a loop that never converges
+        stopped after 3 of 3 permitted attempt(s); routed to escalate
+[PASS] 15. exhaustion escalates with a diagnosis and the failing draft
+        raised_by=validate, to=course_faculty, 2 failing check(s), draft attached
+[PASS] 16. a faculty refusal publishes nothing and escalates
+        run=refusal status=refused nodes=7 attempts=1 escalated=refuse
+[PASS] 17. a refused run leaves every grade unapproved
+        8 grade(s) retained as drafts
+[PASS] 18. a suspended run's gate request survives the process
+        recovered 8 grade(s) from the SQLite checkpointer
+
+========================================================================
+OVERALL: PASS (18/18 checks)
+
+
+### The same lab, as a command
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+import os
+import subprocess
+
+proc = subprocess.run(
+    [sys.executable, "-m", "course_organizer.labs.lab07_node_graph"],
+    capture_output=True,
+    text=True,
+    timeout=600,
+    env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+)
+final = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+print("last stdout line :", final[-1])
+print("exit code        :", proc.returncode)
+assert proc.returncode == 0, proc.stdout + proc.stderr
+
+last stdout line : ==============================================================================
+exit code        : 0
+
+
+## 11. Requirement coverage
+
+## 12. Reproducing this
+
+==============================================================================
+end of notebook - 36 cells, 0 errors
+==============================================================================

@@ -1,0 +1,216 @@
+  note: no MCP_CONNECTOR_TOKEN set; using an ephemeral one for this process.
+        Nothing was written to .env. Set it there if you want the same credential
+        in a separately spawned server.
+
+
+==============================================================================
+doc 2.10, Lab 5 - MCP connector: one typed front door
+==============================================================================
+  run id       : lab05-evidence-fast
+  source       : local  (swap leg: in_memory)
+  course       : CS201
+  endpoints    : list_courses, read_assignment_rubrics, read_notes_store, read_submission_records
+  elapsed      : 52.7ms
+
+  doc goal        : Expose every data source through one typed connector.
+  doc deliverable : A connector server with typed endpoints and auth; agents call only through it.
+  doc accept      : All data access goes through the connector; swapping a source needs no agent change.
+  doc pitfall     : No agent should touch a source directly; a bypass defeats governance later.
+  doc nodes       : Connector used by all data-facing agents. Connector under the data agents.
+
+  pseudocode:
+    connector.expose: read('the notes/materials store')
+                          read('assignment & rubric definitions')
+                          read('submission records')
+    agents.use(connector)   # no agent touches a source directly
+
+==============================================================================
+1. The connector's shape
+==============================================================================
+
+  agent
+    -> ConnectorClient          holds the credential, never the model
+    -> MCP transport (optional) a real MCP server over stdio
+    -> EndpointRegistry          auth, scope check, typed in/out, ledger
+    -> SourceAdapter             the swappable half
+    -> LocalSeedStore            the only code that opens data/
+
+  No line in this project outside course_organizer.connector names the
+  store. That is held by an AST test, not by convention:
+  tests/test_lab05_mcp_connector.py::test_no_module_outside_connector_imports_a_source_store
+
+==============================================================================
+2. The document's three reads, exposed
+==============================================================================
+
+read('the notes/materials store')
+    -> endpoint    : read_notes_store
+    -> origin      : documented: read('the notes/materials store')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : notes:read
+    -> records     : 8
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/notes.json | by faculty@example.edu (course_faculty)
+
+read('assignment & rubric definitions')
+    -> endpoint    : read_assignment_rubrics
+    -> origin      : documented: read('assignment & rubric definitions')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : assignments:read
+    -> records     : 3
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/assignments.json | by faculty@example.edu (course_faculty)
+
+read('submission records')
+    -> endpoint    : read_submission_records
+    -> origin      : documented: read('submission records')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : submissions:read
+    -> records     : 8
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/submissions.json | by faculty@example.edu (course_faculty)
+
+(not in the document)
+    -> endpoint    : list_courses
+    -> origin      : added by Lab 5, not a documented requirement
+    -> scope       : notes:read
+    -> records     : 2
+    -> provenance  : local_seed via local JSON files | data/seed | by faculty@example.edu (course_faculty)
+
+==============================================================================
+3. Auth: the same endpoints, every role
+==============================================================================
+
+  role                scopes                                          list_courses             read_assignment_rubrics  read_notes_store         read_submission_records  
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  anonymous           none                                            R                        R                        R                        R                        
+  course_faculty      assignments:read, notes:read, submissions:read  2                        3                        8                        8                        
+  student             assignments:read, notes:read                    2                        3                        8                        R                        
+  teaching_assistant  assignments:read, notes:read, submissions:read  2                        3                        8                        8                        
+
+  cell = record count when allowed, R = refused by policy, ! = refused some other way
+  roles are this project's choice (docs/lab05.md section b); the document says only
+  "access control per role" (doc 2.3).
+  11 allowed, 5 refused of 16 call(s); every refusal is in the ledger.
+
+  slowest cell: course_faculty -> read_notes_store 1.71ms (allowed)
+  refusals are cheap, so a policy check is not being paid for with a
+  full read of data the caller was never going to see.
+
+==============================================================================
+4. The same connector over a real MCP subprocess
+==============================================================================
+
+  SKIPPED (--no-mcp). No subprocess was spawned.
+
+==============================================================================
+5. Swapping a source changes no agent code
+==============================================================================
+
+  the agent, executed from one tuple for both legs:
+    registry = build_default_connector(source=source, token=token)
+    readers.use_connector(registry, token)
+    tools = build_lab04_registry(run_id=f"{run_id}/{source}")
+    tools.invoke("read_notes_store", {"course_code": course})
+
+  what it returned:
+    SOURCE_ADAPTER=local      -> 'Data Structures'
+                             notes=8  provenance=data/seed/data_structures/notes.json
+    SOURCE_ADAPTER=in_memory  -> 'In-memory exchange course'
+                             notes=1  provenance=in-memory://ZZ999/notes
+
+  unchanged: 4 tool(s) (compute_scope_validation, read_assignment_rubrics, read_notes_store, read_submission_records)
+             query keys ('course_code',), result type NotesReadResult
+
+  the course code's value differs, and that is configuration, not code:
+  the two sources serve different corpora, so each is asked about a
+  course it actually has. A deployment supplies that id alongside
+  SOURCE_ADAPTER. What the agent contributes is the query shape: ('course_code',).
+
+  changed  : course name and provenance, both of which come from the
+             source and from nowhere else. That is what a swap is.
+
+==============================================================================
+6. The pitfall: what governance withheld
+==============================================================================
+
+  No agent should touch a source directly; a bypass defeats governance later.
+
+  as course_faculty : 8 submission record(s) for CS201
+  as student       : REFUSED ConnectorPolicyError
+                     principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  same student, read_notes_store : ALLOWED, 8 note(s)
+  so the refusal is scope-based, not a blanket deny
+
+  what the governed path leaves behind:
+    ledger rows for read_submission_records : 3
+    names the caller                        : True
+    names the missing scope                : True
+
+  where a caller would put a credential to escalate:
+    ConnectorClient.read(endpoint, payload)
+    -> nothing. The token is held by the client, not the call.
+
+  A bypass is not an error, which is why it survives review. The data
+  is real and the code works. What is missing is the row above, and
+  the row is what makes 'later' arguable.
+
+==============================================================================
+7. Ledgers
+==============================================================================
+
+  connector calls (this lab):
+  1. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 2.1ms
+  2. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 1.1ms
+  3. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 1.8ms
+  4. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 0.6ms
+  5. list_courses             refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'list_courses': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  6. read_assignment_rubrics  refused  anonymous (anonymous) scope=assignments:read source=local_seed transport=in_process records=0 0.1ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_assignment_rubrics': it needs the scope 'assignments:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  7. read_notes_store         refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_notes_store': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  8. read_submission_records  refused  anonymous (anonymous) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  9. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 1.4ms
+ 10. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 1.1ms
+ 11. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 1.7ms
+ 12. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 1.2ms
+ 13. list_courses             allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=2 0.4ms
+ 14. read_assignment_rubrics  allowed  student@example.edu (student) scope=assignments:read source=local_seed transport=in_process records=3 0.7ms
+ 15. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 0.8ms
+ 16. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 17. list_courses             allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=2 0.4ms
+ 18. read_assignment_rubrics  allowed  ta@example.edu (teaching_assistant) scope=assignments:read source=local_seed transport=in_process records=3 0.7ms
+ 19. read_notes_store         allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=8 0.8ms
+ 20. read_submission_records  allowed  ta@example.edu (teaching_assistant) scope=submissions:read source=local_seed transport=in_process records=8 1.2ms
+ 21. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 1.0ms
+ 22. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 23. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 0.9ms
+-- 23 call(s), 6 refused, 0 failed, 92 record(s), 18.1ms, fingerprint d0c917b9850376bd
+
+  tool calls (Lab 2's layer, now reading through the connector):
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     1.06  ok
+  2  read_assignment_rubrics         0     1.41  ok
+  3  read_submission_records         0     1.28  ok
+-------------------------------------------------------
+  3  TOTAL                                 3.75  0 failed
+
+==============================================================================
+8. Acceptance
+==============================================================================
+
+  [PASS] the document's three reads are exposed as endpoints            read_notes_store, read_assignment_rubrics, read_submission_records
+  [PASS] every documented read returned data to a full-scope caller     read_notes_store=8, read_assignment_rubrics=3, read_submission_records=8
+  [PASS] every read reports where its data came from                    4 result(s), each with provenance.sources
+  [PASS] the added endpoint is labelled as this project's, not the document's list_courses: added by Lab 5, not a documented requirement
+  [PASS] every endpoint declares the scope it needs                     read_notes_store->notes:read, read_assignment_rubrics->assignments:read, read_submission_records->submissions:read, list_courses->notes:read
+  [PASS] auth is enforced per role, not per caller                      11 allowed, 5 refused of 16 call(s)
+  [PASS] every refusal arrived as a typed policy failure                ConnectorPolicyError
+  [PASS] a student may read the notes but not the cohort's submissions  the refusal discriminates on scope
+  [SKIP] a real MCP subprocess served every call                        NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] the wire and the in-process client return identical payloads   NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] a refusal survives the wire as a typed policy failure          NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] the MCP session is reused rather than respawned per call       NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] each refused role needed its own server spawn                  NOT RUN (--no-mcp); not evidence for this claim
+  [PASS] swapping the source needed no agent change                     same 4 tool(s), same query keys ('course_code',), same NotesReadResult
+  [PASS] the swap really changed the data's origin                      local:'Data Structures' -> in_memory:'In-memory exchange course'
+  [PASS] the pitfall withheld real data from the unauthorised role      8 record(s) withheld; student got ConnectorPolicyError
+  [PASS] the refusal is auditable: the ledger names caller and scope    3 row(s), caller=True, scope=True
+  [PASS] there is no parameter a caller could use to escalate           read(endpoint, payload)
+
+OVERALL: PASS  (18 checks, 5 skipped, 16 access cells, 0 MCP call(s), 52.7ms)
+  note: the skipped checks are the transport ones. This run is not evidence for them;
+        re-run without --no-mcp.

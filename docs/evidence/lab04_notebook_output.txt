@@ -1,0 +1,841 @@
+Evidence - lab04_memory_retrieval.ipynb
+============================
+
+Notebook : notebooks/lab04_memory_retrieval.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 45 cells, 29 code, 29 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 4 - Memory & Retrieval: state vs stored
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+# Locate the project and prove the two are the same thing. Notebooks have no
+# __file__, so the package is found from the package itself.
+import sys
+from pathlib import Path
+
+import course_organizer
+
+ROOT = Path(course_organizer.__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+print("project root :", ROOT)
+print("python       :", sys.version.split()[0])
+print("package      :", course_organizer.__file__)
+
+project root : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+python       : 3.14.7
+package      : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer\__init__.py
+
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+# What is actually installed. Pinned in requirements.txt; nothing here is
+# fetched at run time.
+from importlib.metadata import version
+
+for package in ("pydantic", "langchain-core", "fastembed", "numpy"):
+    try:
+        print(f"  {package:<15} {version(package)}")
+    except Exception:
+        print(f"  {package:<15} (not installed)")
+
+  pydantic        2.13.5
+  langchain-core  1.6.6
+  fastembed       0.8.1
+  numpy           2.5.3
+
+
+## 1. The two memories, and why one field is not enough
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+from course_organizer.memory import (
+    LAYERS, LAYER_PURPOSE, RUN_STATE_PROVENANCE, MemoryLayer,
+)
+
+for layer in LAYERS:
+    print(f"{layer.value:<10} {LAYER_PURPOSE[layer]}")
+
+print()
+print("run-state provenance sentinel :", RUN_STATE_PROVENANCE)
+print("  -> a constant, not a path. It cannot name a file, so a draft can")
+print("     never claim to be one.")
+
+run_state  short-term run state (the current draft)
+archive    long-term stored knowledge (notes store + submission history)
+
+run-state provenance sentinel : run_state:draft
+  -> a constant, not a path. It cannot name a file, so a draft can
+     never claim to be one.
+
+
+### The retrieval side
+
+## 2. Building the archive - through the tool layer, never around it
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+from course_organizer.memory import ArchiveStore
+from course_organizer.tools.compute import build_lab04_registry
+
+RUN_ID = "nb-lab04"
+CS, DB = "CS201", "DBMS402"
+
+tools = build_lab04_registry(run_id=RUN_ID)
+print("tools Lab 4 is allowed to use:", tools.names())
+
+archive = ArchiveStore(run_id=RUN_ID, course_code=CS)
+archive.load_from_tools(tools)
+
+print()
+print(f"{CS} archive: {len(archive.records())} records")
+print("  note versions :", len(archive.notes()))
+print("  submissions   :", len(archive.submissions()))
+print("  fingerprint   :", archive.fingerprint())
+
+tools Lab 4 is allowed to use: ['compute_scope_validation', 'read_assignment_rubrics', 'read_notes_store', 'read_submission_records']
+
+CS201 archive: 18 records
+  note versions : 10
+  submissions   : 8
+  fingerprint   : 9ea328fcba23de18
+
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+print(archive.describe())
+
+archive: CS201  (18 records, fingerprint 9ea328fcba23de18)
+  note_material         10 records (8 current)  provenance=['data/seed/data_structures/notes.json']
+  submission             8 records (8 current)  provenance=['data/seed/data_structures/submissions.json']
+  source: data/seed/data_structures/assignments.json
+  source: data/seed/data_structures/notes.json
+  source: data/seed/data_structures/submissions.json
+
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+# Provenance is what makes "the archive is only what we actually read" checkable.
+for provenance in sorted(archive.allowed_provenance):
+    print(" ", provenance)
+print()
+print("run-state sentinel present in the allow-list?",
+      RUN_STATE_PROVENANCE in archive.allowed_provenance)
+
+  data/seed/data_structures/assignments.json
+  data/seed/data_structures/notes.json
+  data/seed/data_structures/submissions.json
+
+run-state sentinel present in the allow-list? False
+
+
+## 3. A fingerprint, so "corrupts the baseline" means something
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+from course_organizer.memory import MemoryLayer, draft_to_record
+
+again = ArchiveStore(run_id="a-different-run", course_code=CS)
+again.load_from_tools(build_lab04_registry(run_id="a-different-run"))
+
+print("run A fingerprint :", archive.fingerprint())
+print("run B fingerprint :", again.fingerprint(), "(different run id, same corpus)")
+print("stable            :", archive.fingerprint() == again.fingerprint())
+
+# One extra record, and the digest moves. This is what makes the pitfall's
+# "corrupts the baseline" measurable rather than a matter of opinion.
+one_more = ArchiveStore(run_id=RUN_ID, course_code=CS)
+one_more.load_from_tools(build_lab04_registry(run_id=RUN_ID))
+one_more.append(
+    draft_to_record(course_code=CS, content="one extra record").model_copy(
+        update={"provenance": sorted(one_more.allowed_provenance)[0],
+                "layer": MemoryLayer.ARCHIVE}
+    )
+)
+print("after one append  :", one_more.fingerprint(), "(changed)")
+
+run A fingerprint : 9ea328fcba23de18
+run B fingerprint : 9ea328fcba23de18 (different run id, same corpus)
+stable            : True
+after one append  : 0054a23e037e1339 (changed)
+
+
+## 4. The boundary - two independent checks, both real
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+from course_organizer.memory import MemoryBoundaryError, RunState, draft_to_record
+
+draft = draft_to_record(course_code=CS, content="a new answer about linked lists")
+
+attempts = []
+
+# 1. Straightforward: write the draft into the archive.
+try:
+    archive.append(draft)
+    attempts.append(("plain draft", "ACCEPTED - the boundary is broken"))
+except MemoryBoundaryError as exc:
+    attempts.append(("plain draft", f"refused: {exc}"))
+
+# 2. Relabel it. This is the exploit a layer-only check cannot catch.
+relabelled = draft.model_copy(update={"layer": MemoryLayer.ARCHIVE})
+try:
+    archive.append(relabelled)
+    attempts.append(("relabelled draft", "ACCEPTED - the boundary is broken"))
+except MemoryBoundaryError as exc:
+    attempts.append(("relabelled draft", f"refused: {exc}"))
+
+# 3. Claim provenance that exists on disk, but belongs to another course.
+forged = draft.model_copy(update={
+    "layer": MemoryLayer.ARCHIVE,
+    "provenance": "data/seed/dbms/notes.json",
+})
+try:
+    archive.append(forged)
+    attempts.append(("forged provenance", "ACCEPTED - the boundary is broken"))
+except MemoryBoundaryError as exc:
+    attempts.append(("forged provenance", f"refused: {exc}"))
+
+# 4. And the other direction: an archive record into run state.
+try:
+    RunState(run_id=RUN_ID, course_code=CS).append(archive.get("DS-A1-S001"))
+    attempts.append(("archive into run state", "ACCEPTED - the boundary is broken"))
+except MemoryBoundaryError as exc:
+    attempts.append(("archive into run state", f"refused: {exc}"))
+
+for label, outcome in attempts:
+    print(f"{label:<22} {outcome}")
+
+plain draft            refused: cannot store a run_state record in a store holding archive records. short-term run state (the current draft) and long-term stored knowledge (notes store + submission history) are separate memories: short-term run state (the current draft) must not reach long-term stored knowledge (notes store + submission history).
+relabelled draft       refused: record 'draft-ab594369' claims provenance 'run_state:draft', which is not a source this archive store reads from. Allowed: ['data/seed/data_structures/assignments.json', 'data/seed/data_structures/notes.json', 'data/seed/data_structures/submissions.json']
+forged provenance      refused: record 'draft-ab594369' claims provenance 'data/seed/dbms/notes.json', which is not a source this archive store reads from. Allowed: ['data/seed/data_structures/assignments.json', 'data/seed/data_structures/notes.json', 'data/seed/data_structures/submissions.json']
+archive into run state refused: cannot store a archive record in a store holding run_state records. long-term stored knowledge (notes store + submission history) and short-term run state (the current draft) are separate memories: long-term stored knowledge (notes store + submission history) must not reach short-term run state (the current draft).
+
+
+## 5. Retrieval - the acceptance criterion, literally
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+from course_organizer.labs import lab04_memory_retrieval as lab04
+
+for case in lab04.cases():
+    print(f"{case.label:<16} {case.course_code:<9} tags={list(case.tags)} "
+          f"match={case.tag_match} k={case.k} "
+          f"expect={case.expect_disposition}")
+
+new-answer       CS201     tags=['linked-list', 'unit:1'] match=all k=5 expect=within_threshold
+verbatim-copy    CS201     tags=['linked-list', 'unit:1'] match=all k=5 expect=review_required
+restatement      CS201     tags=['linked-list', 'unit:1'] match=all k=5 expect=within_threshold
+other-subject    DBMS402   tags=['normalisation', 'unit:2'] match=all k=5 expect=within_threshold
+
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+from course_organizer.memory import (
+    SimilarityQuery, TagQuery, build_default_memory_registry,
+)
+
+registry = build_default_memory_registry(
+    run_id=RUN_ID, course_code=CS, archive=archive
+)
+print("retrievers:", registry.names())
+print("layers covered by wiring:", [layer.value for layer in registry.layers_covered()])
+
+retrievers: ['retrieve_by_tags', 'retrieve_similar_prior']
+layers covered by wiring: ['archive']
+
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+tags = TagQuery(course_code=CS, tags=["linked-list", "unit:1"], match="all")
+tag_result = registry.invoke("retrieve_by_tags", tags).unwrap()
+
+print(f"{len(tag_result.hits)} hit(s) of {tag_result.scanned} scanned\n")
+for hit in tag_result.hits:
+    print(f"  {hit.rank}. {hit.record_id:<26} {hit.why}")
+    print(f"     matched: {hit.matched_tags}")
+
+# The acceptance criterion, as a check rather than a hope.
+assert all(set(h.matched_tags) >= {"linked-list", "unit:1"} for h in tag_result.hits)
+print("\nassertion: every hit carries BOTH requested tags -- held")
+
+2 hit(s) of 18 scanned
+
+  1. ds-u1-linked-lists@v1      carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+     matched: ['linked-list', 'unit:1']
+  2. ds-u1-linked-lists@v2      carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+     matched: ['linked-list', 'unit:1']
+
+assertion: every hit carries BOTH requested tags -- held
+
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+# current_only matters: the notes store holds versions, and only the
+# authoritative one should ever be retrieved.
+everything = registry.invoke(
+    "retrieve_by_tags",
+    TagQuery(course_code=CS, tags=["linked-list"], current_only=False),
+).unwrap()
+current = registry.invoke(
+    "retrieve_by_tags",
+    TagQuery(course_code=CS, tags=["linked-list"], current_only=True),
+).unwrap()
+
+print(f"without current_only: {[h.record_id for h in everything.hits]}")
+print(f"with    current_only: {[h.record_id for h in current.hits]}")
+print(f"\n{len(everything.hits) - len(current.hits)} superseded version(s) withheld.")
+
+without current_only: ['ds-u1-linked-lists@v1', 'ds-u1-linked-lists@v2']
+with    current_only: ['ds-u1-linked-lists@v2']
+
+1 superseded version(s) withheld.
+
+
+### Similarity - and why the default filter is `["submission"]`
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+sim = registry.invoke(
+    "retrieve_similar_prior",
+    SimilarityQuery(course_code=CS, text=lab04.DRAFT_NEW_ANSWER, k=5),
+).unwrap()
+
+print(f"embedder={sim.embedder}  dim={sim.embedder_dim}  "
+      f"threshold={sim.threshold_used}")
+print(f"{len(sim.hits)} hit(s) from {sim.corpus_size} candidates "
+      f"({sim.excluded_by_kind} excluded by kind)\n")
+for hit in sim.hits:
+    print(f"  {hit.rank}. {hit.record_id:<26} {hit.score:.4f}  {hit.why}")
+
+embedder=hashing-3-5-256d  dim=256  threshold=0.995
+5 hit(s) from 8 candidates (10 excluded by kind)
+
+  1. DS-A1-S001                 0.9785  embedding cosine 0.9785 against the candidate draft
+  2. DS-A1-S003                 0.9767  embedding cosine 0.9767 against the candidate draft
+  3. DS-A1-S004                 0.9763  embedding cosine 0.9763 against the candidate draft
+  4. DS-A1-S002                 0.9748  embedding cosine 0.9748 against the candidate draft
+  5. DS-A2-S006                 0.9709  embedding cosine 0.9709 against the candidate draft
+
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+# What an unfiltered query would have returned, for comparison.
+unfiltered = registry.invoke(
+    "retrieve_similar_prior",
+    SimilarityQuery(course_code=CS, text=lab04.DRAFT_NEW_ANSWER, k=1, kinds=[]),
+).unwrap()
+nearest_unfiltered = archive.get(unfiltered.top_match_id)
+
+print(f"unfiltered nearest : {unfiltered.top_match_id} "
+      f"({nearest_unfiltered.kind}) at {unfiltered.top_score:.4f}")
+print(f"history-only top   : {sim.top_match_id} at {sim.top_score:.4f}")
+print()
+print("The nearest thing to a new linked-list answer is the linked-list LECTURE")
+print("NOTES. Unfiltered, a plagiarism screen answers 'have you seen this")
+print("before?' with the course's own textbook - which looks like evidence and")
+print("is not. Hence the default.")
+
+unfiltered nearest : ds-u1-linked-lists@v2 (note_material) at 0.9829
+
+
+history-only top   : DS-A1-S001 at 0.9785
+
+The nearest thing to a new linked-list answer is the linked-list LECTURE
+NOTES. Unfiltered, a plagiarism screen answers 'have you seen this
+before?' with the course's own textbook - which looks like evidence and
+is not. Hence the default.
+
+
+## 6. The flag is a routing decision, and its *shape* enforces that
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+from course_organizer.memory import PLAGIARISM_FORBIDDEN_FIELDS, flag_field_names, raise_flag
+
+present = flag_field_names()
+print(f"{len(present)} fields on SimilarityFlag:")
+for name in sorted(present):
+    print("  ", name)
+
+clash = present & PLAGIARISM_FORBIDDEN_FIELDS
+print(f"\noverlap with the forbidden set: {sorted(clash) or 'none'}")
+print(f"(the forbidden set holds {len(PLAGIARISM_FORBIDDEN_FIELDS)} names)")
+assert not clash
+
+14 fields on SimilarityFlag:
+   authority
+   candidate_id
+   candidate_layer
+   compared_against
+   decided_by
+   disposition
+   exceeds_threshold
+   rationale
+   requires_human_review
+   reviewed_by
+   score_source
+   threshold
+   top_match_id
+   top_score
+
+overlap with the forbidden set: none
+(the forbidden set holds 19 names)
+
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+from course_organizer.memory import MemoryLayer, RunState
+
+planted = archive.get("DS-A1-S001")
+
+# Look the case up by label, not index: an index would silently measure a
+# different case the moment one is added or reordered.
+verbatim_case = next(c for c in lab04.cases() if c.label == "verbatim-copy")
+source_text = lab04.resolve_candidate(archive, verbatim_case).content
+
+# The text comes *out of the archive*, but the draft is a run-state record.
+# Passing the archive record straight to raise_flag is refused -- which is the
+# point, and is demonstrated one cell below.
+short_term = RunState(run_id=RUN_ID, course_code=CS)
+short_term.set_draft(source_text, title="verbatim-copy candidate")
+verbatim = short_term.draft()
+
+print("draft layer            :", verbatim.layer.value)
+print("text is byte-identical :", verbatim.content == planted.content)
+
+result = registry.invoke(
+    "retrieve_similar_prior",
+    SimilarityQuery(course_code=CS, text=verbatim.content, k=5),
+).unwrap()
+flag = raise_flag(verbatim, result)
+
+print()
+print(flag.summary())
+print()
+print("every field the flag carries:")
+for name, value in flag.model_dump().items():
+    print(f"  {name:<22} {value!r}")
+
+draft layer            : run_state
+text is byte-identical : True
+
+review_required: candidate draft-b9780248 vs DS-A1-S001 score=0.9996 threshold=0.9950 review=True by=similarity_retriever
+
+every field the flag carries:
+  candidate_id           'draft-b9780248'
+  candidate_layer        <MemoryLayer.RUN_STATE: 'run_state'>
+  compared_against       ['DS-A1-S001', 'DS-A1-S003', 'DS-A1-S002', 'DS-A1-S004', 'DS-A2-S005']
+  top_match_id           'DS-A1-S001'
+  top_score              0.999563
+  threshold              0.995
+  exceeds_threshold      True
+  disposition            'review_required'
+  requires_human_review  True
+  reviewed_by            ''
+  decided_by             'similarity_retriever'
+  authority              'course_faculty'
+  score_source           'hashing-3-5-256d'
+  rationale              'A cosine similarity between embeddings, compared against a triage threshold. This is a routing signal for human review. It is not a determination that any plagiarism occurred, and it carries no mark adjustment.'
+
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+# The refusal above is not a technicality. An archive record is not a candidate,
+# because a flag about one would be the archive reporting on itself -- which is
+# the same corruption as the pitfall, arriving through the front door.
+try:
+    raise_flag(planted, result)
+except MemoryBoundaryError as exc:
+    print("refused, as it must be:")
+    print(" ", exc)
+
+refused, as it must be:
+  cannot raise a similarity flag about 'DS-A1-S001': it is in the 'archive' layer, not run state, so it is not a draft. the similarity flag exists to compare an in-flight draft against the archive, not to compare the archive against itself; the no-repeat and validation questions both start from a candidate
+
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+# The properties that make it a decision *about routing*:
+print("exceeds_threshold   :", flag.exceeds_threshold)
+print("disposition         :", flag.disposition)
+print("requires_human_review:", flag.requires_human_review)
+print("authority           :", flag.authority)
+print("reviewed_by         :", repr(flag.reviewed_by), "<- nobody has reviewed it yet")
+print("is_determination()  :", flag.is_determination())
+print()
+print("There is no field in which to put 'is plagiaristic'. That is the point:")
+print("the type cannot express a verdict, so no caller can read one off it.")
+
+exceeds_threshold   : True
+disposition         : review_required
+requires_human_review: True
+authority           : course_faculty
+reviewed_by         : '' <- nobody has reviewed it yet
+is_determination()  : False
+
+There is no field in which to put 'is plagiaristic'. That is the point:
+the type cannot express a verdict, so no caller can read one off it.
+
+
+## 7. Where the threshold came from
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+from course_organizer.memory import (
+    TRIAGE_THRESHOLD_FASTEMBED, TRIAGE_THRESHOLD_HASHING, build_embedder,
+)
+
+rows = lab04.lab_threshold_report(run_id=f"{RUN_ID}/thresholds")
+embedder = build_embedder()
+
+print(lab04.format_threshold_report(
+    rows, embedder_name=embedder.name, threshold=embedder.triage_threshold
+))
+
+embedding backend: hashing-3-5-256d
+triage threshold : 0.9950  (routing only; doc 2.4 node 4, 2.12)
+
+every row below is one of this lab's own cases, measured against the
+archive that case names -- so this table and the acceptance checks
+cannot disagree about what was measured.
+
+case            course        top     2nd     gap  flagged? want  matches     
+------------------------------------------------------------------------------
+verbatim-copy   CS201      0.9996  0.9985  0.0010  yes      yes   DS-A1-S001  
+other-subject   DBMS402    0.9903  0.9866  0.0038  no       no    DB-A2-S003  
+restatement     CS201      0.9799  0.9782  0.0017  no       no    DS-A1-S002  
+new-answer      CS201      0.9785  0.9767  0.0018  no       no    DS-A1-S001  
+------------------------------------------------------------------------------
+4 of 4 cases classified as expected. A 'WRONG' row means the threshold is miscalibrated for this backend.
+headroom above : +0.0046  (tightest must-flag case verbatim-copy)
+headroom below : +0.0047  (closest must-not-flag case other-subject)
+verdict        : only 0.0046 of headroom on 'verbatim-copy' - this backend separates copies from originals far more by luck than by margin. Triage only; never a determination.
+
+
+
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+margins = lab04.threshold_margins(rows, embedder.triage_threshold)
+print("verdict:", margins["verdict"])
+print()
+print("constants in force:")
+print(f"  hashing   {TRIAGE_THRESHOLD_HASHING}   gap 0.0093 wide  <- the default")
+print(f"  fastembed {TRIAGE_THRESHOLD_FASTEMBED}   gap 0.0436 wide")
+print()
+print("Both classify all four cases. They are not equally trustworthy, and the")
+print("table above is what says so: the hashing gap is 0.0093 wide, so its")
+print("threshold works nearly as much by rounding as by margin. It is the default")
+print("only because it needs no model download, which keeps these acceptance")
+print("criteria re-checkable by a reviewer with no credentials and no network.")
+
+verdict: only 0.0046 of headroom on 'verbatim-copy' - this backend separates copies from originals far more by luck than by margin. Triage only; never a determination.
+
+constants in force:
+  hashing   0.995   gap 0.0093 wide  <- the default
+  fastembed 0.9663   gap 0.0436 wide
+
+Both classify all four cases. They are not equally trustworthy, and the
+table above is what says so: the hashing gap is 0.0093 wide, so its
+threshold works nearly as much by rounding as by margin. It is the default
+only because it needs no model download, which keeps these acceptance
+criteria re-checkable by a reviewer with no credentials and no network.
+
+
+------------------------------------------------------------------------------
+In [21]:
+------------------------------------------------------------------------------
+# The learned backend, for real. Needs a one-time ~69 MB download.
+try:
+    fe = build_embedder("fastembed")
+    print(f"loaded {fe.name}  dim={fe.dim}")
+    fe_rows = lab04.lab_threshold_report(run_id=f"{RUN_ID}/fe", embedder=fe)
+    print()
+    print(lab04.format_threshold_report(
+        fe_rows, embedder_name=fe.name, threshold=fe.triage_threshold
+    ))
+except Exception as exc:
+    print("fastembed backend unavailable here:", type(exc).__name__, exc)
+    print("The hashing table above is the default path and runs anywhere.")
+
+C:\Users\ummea\.virtualenvs\course-organizer\Lib\site-packages\tqdm\auto.py:21: TqdmWarning: IProgress not found. Please update jupyter and ipywidgets. See https://ipywidgets.readthedocs.io/en/stable/user_install.html
+  from .autonotebook import tqdm as notebook_tqdm
+
+loaded fastembed:BAAI/bge-small-en-v1.5  dim=384
+
+
+embedding backend: fastembed:BAAI/bge-small-en-v1.5
+triage threshold : 0.9663  (routing only; doc 2.4 node 4, 2.12)
+
+every row below is one of this lab's own cases, measured against the
+archive that case names -- so this table and the acceptance checks
+cannot disagree about what was measured.
+
+case            course        top     2nd     gap  flagged? want  matches     
+------------------------------------------------------------------------------
+verbatim-copy   CS201      0.9881  0.9780  0.0101  yes      yes   DS-A1-S001  
+other-subject   DBMS402    0.9445  0.8833  0.0612  no       no    DB-A2-S003  
+new-answer      CS201      0.8821  0.8793  0.0028  no       no    DS-A1-S001  
+restatement     CS201      0.7916  0.7845  0.0071  no       no    DS-A1-S003  
+------------------------------------------------------------------------------
+4 of 4 cases classified as expected. A 'WRONG' row means the threshold is miscalibrated for this backend.
+headroom above : +0.0218  (tightest must-flag case verbatim-copy)
+headroom below : +0.0218  (closest must-not-flag case other-subject)
+verdict        : 0.0218 of headroom on 'other-subject' - comfortable for triage, and still not a determination.
+
+
+## 8. The pitfall, run on purpose
+
+------------------------------------------------------------------------------
+In [22]:
+------------------------------------------------------------------------------
+violation = lab04.demonstrate_boundary_violation(
+    run_id=f"{RUN_ID}/violation",
+    course_code=CS,
+    registry_factory=lambda store: build_default_memory_registry(
+        run_id=f"{RUN_ID}/violation", course_code=CS, archive=store
+    ),
+    draft_text=planted.content,
+    candidate_source_id=planted.record_id,
+)
+print(violation.describe())
+
+ContaminatedArchive has had its boundary checks removed. It will now accept records that MemoryStore.append would refuse. This is Lab 4's deliberate demonstration and nothing else.
+
+violation: CS201: draft written into the archive
+  doc      : Don't conflate run state with the archive - mixing them corrupts the baseline.
+  attempted: archive.append(draft-f931663a) -- a run_state record with provenance 'run_state:draft'
+  REFUSED  : layer check=True provenance check=True
+             cannot store a run_state record in a store holding archive records. short-term run state (the current draft) and long-term stored knowledge (notes store + submission history) are separate memories: short-term run state (the current draft) must not reach long-term stored knowledge (notes store + submission history).
+  [after relabelling the layer] record 'draft-f931663a' claims provenance 'run_state:draft', which is not a source this archive store reads from. Allowed: ['data/seed/data_structures/assignments.json', 'data/seed/data_structures/notes.json', 'data/seed/data_structures/submissions.json']
+  baseline : 9ea328fcba23de18 -> e55b6c0007d34450 corrupted=True
+  self-hit : DS-A1-S001 at 0.9996 (the draft found itself)
+  damage   : with the draft in the archive, the no-repeat check reports DS-A1-S001 at 0.9996 -- the run's own text -- and routes it to review_required. Every future run inherits that baseline, so the system would flag itself on every submission until the archive was rebuilt from source.
+
+
+------------------------------------------------------------------------------
+In [23]:
+------------------------------------------------------------------------------
+print("refused by the layer check      :", violation.refused_by_layer)
+print("refused by the provenance check :", violation.refused_by_provenance)
+print("baseline before                 :", violation.archive_fingerprint_before)
+print("baseline after                  :", violation.archive_fingerprint_after)
+print("baseline corrupted              :", violation.baseline_corrupted)
+print("self-match score                :", violation.self_match_score)
+print()
+print(violation.false_positive)
+
+refused by the layer check      : True
+refused by the provenance check : True
+baseline before                 : 9ea328fcba23de18
+baseline after                  : e55b6c0007d34450
+baseline corrupted              : True
+self-match score                : 0.999563
+
+with the draft in the archive, the no-repeat check reports DS-A1-S001 at 0.9996 -- the run's own text -- and routes it to review_required. Every future run inherits that baseline, so the system would flag itself on every submission until the archive was rebuilt from source.
+
+
+## 9. Every action is logged
+
+------------------------------------------------------------------------------
+In [24]:
+------------------------------------------------------------------------------
+print(tools.ledger.report())
+
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     0.99  ok
+  2  read_submission_records         0     1.21  ok
+-------------------------------------------------------
+  2  TOTAL                                 2.20  0 failed
+
+
+------------------------------------------------------------------------------
+In [25]:
+------------------------------------------------------------------------------
+print(registry.ledger.report())
+
+  #  retriever                 layer        hits  corpus       ms  status
+-------------------------------------------------------------------------
+  1  retrieve_by_tags          archive         2      18     0.14  ok
+  2  retrieve_by_tags          archive         2      18     0.11  ok
+  3  retrieve_by_tags          archive         1      18     0.05  ok
+  4  retrieve_similar_prior    archive         5      18    20.41  ok
+  5  retrieve_similar_prior    archive         1      18    60.85  ok
+  6  retrieve_similar_prior    archive         5      18    18.46  ok
+-------------------------------------------------------------------------
+  6  TOTAL                                                 100.02  0 failed
+
+
+## 10. The whole lab, end to end
+
+------------------------------------------------------------------------------
+In [26]:
+------------------------------------------------------------------------------
+result = lab04.run_memory_retrieval(run_id=f"{RUN_ID}/full", embedder_backend="hashing")
+
+print(f"run id   : {result.run_id}")
+print(f"embedder : {result.embedder_name}")
+print(f"triage   : {result.threshold:.4f}")
+print(f"elapsed  : {result.total_elapsed_ms:.1f}ms")
+print()
+print(f"{len(result.bundles)} case(s), {len(result.checks)} check(s)")
+
+ContaminatedArchive has had its boundary checks removed. It will now accept records that MemoryStore.append would refuse. This is Lab 4's deliberate demonstration and nothing else.
+
+run id   : nb-lab04/full
+embedder : hashing-3-5-256d
+triage   : 0.9950
+elapsed  : 351.7ms
+
+4 case(s), 25 check(s)
+
+
+------------------------------------------------------------------------------
+In [27]:
+------------------------------------------------------------------------------
+for description, ok, detail in result.checks:
+    print(f"[{'PASS' if ok else 'FAIL'}] {description:<62} {detail}")
+print()
+print("OVERALL:", "PASS" if result.passed else f"FAIL {result.failed}")
+
+[PASS] new-answer: every candidate carries the requested tags         1 hit(s) of 18 scanned
+[PASS] new-answer: similar prior items returned                       top DS-A1-S001 at 0.9785
+[PASS] new-answer: routed to within_threshold                         within_threshold
+[PASS] verbatim-copy: every candidate carries the requested tags      1 hit(s) of 18 scanned
+[PASS] verbatim-copy: similar prior items returned                    top DS-A1-S001 at 0.9996
+[PASS] verbatim-copy: routed to review_required                       review_required
+[PASS] restatement: every candidate carries the requested tags        1 hit(s) of 18 scanned
+[PASS] restatement: similar prior items returned                      top DS-A1-S002 at 0.9799
+[PASS] restatement: routed to within_threshold                        within_threshold
+[PASS] other-subject: every candidate carries the requested tags      1 hit(s) of 13 scanned
+[PASS] other-subject: similar prior items returned                    top DB-A2-S003 at 0.9903
+[PASS] other-subject: routed to within_threshold                      within_threshold
+[PASS] no case changed the archive's content fingerprint              4 case(s)
+[PASS] no run-state draft is in any archive                           the short-term half stayed short-term
+[PASS] no retrieval read the run state                                archive
+[PASS] no archive contains a foreign-layer record                     baseline 9ea328fcba23de18 -> 1d6c597610301202
+[PASS] the similarity flag has no verdict or penalty field            none present
+[PASS] no bundle produced a plagiarism determination                  2.4 node 4: flag for human review, never determine
+[PASS] every flagged case names the human authority                   course_faculty
+[PASS] nothing has been reviewed yet, and the record says so          reviewed_by is empty on every flag
+[PASS] writing a draft into the archive is refused                    layer=True provenance=True
+[PASS] the relabelled attempt is refused by provenance too            two independent checks, not one check twice
+[PASS] the contamination demonstrably changes the baseline            9ea328fcba23de18 -> 1d6c597610301202
+[PASS] the triage threshold separates the planted copy from the rest  4 of 4 case(s), tightest margin +0.0046 on verbatim-copy
+[PASS] every similarity hit came from the submission history only     11 distinct prior item(s) across 4 case(s)
+
+OVERALL: PASS
+
+
+------------------------------------------------------------------------------
+In [28]:
+------------------------------------------------------------------------------
+# Per-case detail: what each retrieval actually found.
+for bundle in result.bundles:
+    print("=" * 78)
+    print(f"{bundle.case_label}  [{bundle.course_code}]  {bundle.candidate_kind}")
+    print()
+    for hit in bundle.tag_result.hits:
+        print(f"  tag hit   {hit.record_id:<26} {hit.why}")
+    for hit in bundle.similar_result.hits:
+        print(f"  similar    {hit.record_id:<26} {hit.score:.4f}")
+    print(f"  flag       {bundle.flag.summary()}")
+    print(f"  archive    {bundle.archive_fingerprint_before} -> "
+          f"{bundle.archive_fingerprint_after}  (unchanged: {bundle.archive_unchanged})")
+
+==============================================================================
+new-answer  [CS201]  new
+
+  tag hit   ds-u1-linked-lists@v2      carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+  similar    DS-A1-S001                 0.9785
+  similar    DS-A1-S003                 0.9767
+  similar    DS-A1-S004                 0.9763
+  similar    DS-A1-S002                 0.9748
+  similar    DS-A2-S006                 0.9709
+  flag       within_threshold: candidate draft-a0204a96 vs DS-A1-S001 score=0.9785 threshold=0.9950 review=False by=similarity_retriever
+  archive    9ea328fcba23de18 -> 9ea328fcba23de18  (unchanged: True)
+==============================================================================
+verbatim-copy  [CS201]  verbatim
+
+  tag hit   ds-u1-linked-lists@v2      carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+  similar    DS-A1-S001                 0.9996
+  similar    DS-A1-S003                 0.9985
+  similar    DS-A1-S002                 0.9798
+  similar    DS-A1-S004                 0.9789
+  similar    DS-A2-S005                 0.9754
+  flag       review_required: candidate draft-e0bc20f5 vs DS-A1-S001 score=0.9996 threshold=0.9950 review=True by=similarity_retriever
+  archive    9ea328fcba23de18 -> 9ea328fcba23de18  (unchanged: True)
+==============================================================================
+restatement  [CS201]  restated
+
+  tag hit   ds-u1-linked-lists@v2      carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+  similar    DS-A1-S002                 0.9799
+  similar    DS-A1-S004                 0.9782
+  similar    DS-A1-S001                 0.9775
+  similar    DS-A1-S003                 0.9751
+  similar    DS-A2-S006                 0.9743
+  flag       within_threshold: candidate draft-56544b4b vs DS-A1-S002 score=0.9799 threshold=0.9950 review=False by=similarity_retriever
+  archive    9ea328fcba23de18 -> 9ea328fcba23de18  (unchanged: True)
+==============================================================================
+other-subject  [DBMS402]  new
+
+  tag hit   dbms-u2-normalisation@v1   carries 2/2 requested tag(s): ['normalisation', 'unit:2']
+  similar    DB-A2-S003                 0.9903
+  similar    DB-A2-S004                 0.9866
+  similar    DB-A3-S006                 0.9764
+  similar    DB-A1-S002                 0.9739
+  similar    DB-A1-S001                 0.9707
+  flag       within_threshold: candidate draft-5b44b1cd vs DB-A2-S003 score=0.9903 threshold=0.9950 review=False by=similarity_retriever
+  archive    83c6b277460c5494 -> 83c6b277460c5494  (unchanged: True)
+
+
+## 11. What this lab does not do
+
+------------------------------------------------------------------------------
+In [29]:
+------------------------------------------------------------------------------
+print("lab04 CLI :  python -m course_organizer.labs.lab04_memory_retrieval")
+print("              --embedding-backend fastembed     # the learned model")
+print("              --run-id <id>                     # reproducible run id")
+print()
+print("tests      :  python -m pytest tests/test_lab04_memory_retrieval.py")
+print("              python -m pytest                    # all 8 labs so far")
+
+lab04 CLI :  python -m course_organizer.labs.lab04_memory_retrieval
+              --embedding-backend fastembed     # the learned model
+              --run-id <id>                     # reproducible run id
+
+tests      :  python -m pytest tests/test_lab04_memory_retrieval.py
+              python -m pytest                    # all 8 labs so far
+
+
+==============================================================================
+end of notebook - 45 cells, 0 errors
+==============================================================================

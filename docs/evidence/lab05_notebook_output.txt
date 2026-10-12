@@ -1,0 +1,1089 @@
+Evidence - lab05_mcp_connector.ipynb
+=========================
+
+Notebook : notebooks/lab05_mcp_connector.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 54 cells, 36 code, 36 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 5 - MCP connector: one typed, authorised front door
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+# Locate the project and prove the two are the same thing. Notebooks have no
+# __file__, so the package is found from the package itself.
+import sys
+from pathlib import Path
+
+import course_organizer
+
+ROOT = Path(course_organizer.__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+print("project root :", ROOT)
+print("python       :", sys.version.split()[0])
+print("package      :", course_organizer.__file__)
+
+project root : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+python       : 3.14.7
+package      : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer\__init__.py
+
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+# What is actually installed. Pinned in requirements.txt; nothing here is
+# fetched at run time. `mcp` is the protocol server and `langchain-mcp-adapters`
+# is the client bridge that turns it into LangChain tools.
+from importlib.metadata import version
+
+for package in (
+    "pydantic", "langchain-core", "langchain-mcp-adapters", "mcp",
+):
+    try:
+        print(f"  {package:<24} {version(package)}")
+    except Exception:
+        print(f"  {package:<24} (not installed)")
+
+  pydantic                 2.13.5
+  langchain-core           1.6.6
+  langchain-mcp-adapters   0.3.2
+  mcp                      1.30.0
+
+
+## 1. What a connector actually is, here
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+import secrets
+
+from course_organizer.connector import ROLE_SCOPES, build_default_connector
+from course_organizer.labs import lab05_mcp_connector as lab05
+
+# An ephemeral credential. ensure_token() never writes a file: a generated
+# token lives in this process only. Set MCP_CONNECTOR_TOKEN in .env to share one
+# with a separately spawned server.
+TOKEN = secrets.token_urlsafe(24)
+registry = build_default_connector(source="local", token=TOKEN)
+
+descriptor = registry.adapter.descriptor
+print(f"source       : {descriptor.name} via {descriptor.transport}")
+print(f"provenance   : {descriptor.provenance}   writable={descriptor.writable}")
+print(f"credentials  : {descriptor.requires_source_credentials}")
+print(f"swap note    : {descriptor.swap_note}")
+print()
+print("Note what the registry does *not* know: no file path is configurable here,")
+print("no store is reachable, and the endpoint list below is the whole surface.")
+print()
+print(f"{len(registry.names())} endpoint(s):")
+for name in registry.names():
+    spec = registry.get(name)
+    print(f"  {name:<26} scope={spec.scope:<18} documented={spec.documented}")
+
+source       : local_seed via local JSON files
+provenance   : data/seed   writable=False
+credentials  : False
+swap note    : The default. Reads data/seed/<course>/{notes,assignments,submissions}.json. No credentials, no network.
+
+Note what the registry does *not* know: no file path is configurable here,
+no store is reachable, and the endpoint list below is the whole surface.
+
+4 endpoint(s):
+  list_courses               scope=notes:read         documented=False
+  read_assignment_rubrics    scope=assignments:read   documented=True
+  read_notes_store           scope=notes:read         documented=True
+  read_submission_records    scope=submissions:read   documented=True
+
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+# The contract as the agent sees it: what each endpoint is for, and which
+# document line it implements. Printed from the registry, so it cannot drift
+# from what the server actually serves.
+print(registry.describe_all())
+
+[1] list_courses() -> CourseListResult
+    scope    : notes:read
+    origin   : added by Lab 5, not a documented requirement
+    summary  : List the course codes this connector's source can serve. Call this first when you do not already know a valid course_code; the other three endpoints all require one.
+[2] read_assignment_rubrics(course_code) -> AssignmentResult
+    scope    : assignments:read
+    origin   : documented: read('assignment & rubric definitions')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    summary  : Read 'assignment & rubric definitions' for one course: the brief, the due date, the marks and the rubric criteria. Call this instead of recalling an assignment's marks or criteria from memory.
+[3] read_notes_store(course_code, unit) -> NotesResult
+    scope    : notes:read
+    origin   : documented: read('the notes/materials store')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    summary  : Read 'the notes/materials store' for one course: lecture notes, slides and reference material, their units and version history. Call this instead of recalling any note text or unit count from memory. If you pass `unit`, it must be an exact unit id from the course (call list_courses, or read without a filter first to see them); an unknown unit is refused with the real list rather than returning an empty result.
+[4] read_submission_records(course_code, assignment_id) -> SubmissionResult
+    scope    : submissions:read
+    origin   : documented: read('submission records')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    summary  : Read 'submission records' for one course: who submitted what, when, and whether it was late. This is the cohort's history, so it is the endpoint the role policy restricts most tightly. Call this instead of assuming a submission's status or timestamp. If you pass `assignment_id`, it must be an exact id; an unknown one is refused with the real list rather than returning an empty result, because 'no submissions' is a claim a grader might act on.
+-- 4 endpoint(s) over source local_seed via local JSON files, provenance=data/seed, writable=False
+
+
+### `documented` versus `added_by_lab`
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+for name in sorted(registry.names()):
+    print(f"{name}")
+    print(f"    {registry.get(name).origin}")
+
+list_courses
+    added by Lab 5, not a documented requirement
+read_assignment_rubrics
+    documented: read('assignment & rubric definitions')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+read_notes_store
+    documented: read('the notes/materials store')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+read_submission_records
+    documented: read('submission records')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+
+
+## 2. The document's three reads, exposed and attributed
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+observations = lab05.observe_reads(registry, TOKEN, "CS201")
+
+for observation in observations:
+    print(observation.render())
+    print()
+
+read('the notes/materials store')
+    -> endpoint    : read_notes_store
+    -> origin      : documented: read('the notes/materials store')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : notes:read
+    -> records     : 8
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/notes.json | by faculty@example.edu (course_faculty)
+
+read('assignment & rubric definitions')
+    -> endpoint    : read_assignment_rubrics
+    -> origin      : documented: read('assignment & rubric definitions')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : assignments:read
+    -> records     : 3
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/assignments.json | by faculty@example.edu (course_faculty)
+
+read('submission records')
+    -> endpoint    : read_submission_records
+    -> origin      : documented: read('submission records')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+    -> scope       : submissions:read
+    -> records     : 8
+    -> provenance  : local_seed via local JSON files | data/seed/data_structures/submissions.json | by faculty@example.edu (course_faculty)
+
+(not in the document)
+    -> endpoint    : list_courses
+    -> origin      : added by Lab 5, not a documented requirement
+    -> scope       : notes:read
+    -> records     : 2
+    -> provenance  : local_seed via local JSON files | data/seed | by faculty@example.edu (course_faculty)
+
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+# The origin of every read, as data rather than as a caption. Three documented,
+# one added - and the added one says so on its own row.
+for observation in observations:
+    tag = "documented" if observation.documented else "ADDED BY THIS PROJECT"
+    print(f"{observation.endpoint:<26} {tag}")
+    print(f"    doc ref : {observation.declared_doc_ref}")
+    print(f"    origin  : {observation.declared_origin}")
+    print()
+
+read_notes_store           documented
+    doc ref : doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.'
+    origin  : documented: read('the notes/materials store')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+
+read_assignment_rubrics    documented
+    doc ref : doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.'
+    origin  : documented: read('assignment & rubric definitions')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+
+read_submission_records    documented
+    doc ref : doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.'
+    origin  : documented: read('submission records')  [doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.']
+
+list_courses               ADDED BY THIS PROJECT
+    doc ref : doc 2.10 Lab 5: 'A connector server with typed endpoints and auth; agents call only through it.'
+    origin  : added by Lab 5, not a documented requirement
+
+
+## 3. Auth: the same endpoints, every role
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+from course_organizer.connector import CONNECTOR_ROLES, KNOWN_SCOPES
+
+# The table is closed in both directions: no scope outside the connector's
+# vocabulary, and no scope the connector defines that some role cannot hold.
+declared = set().union(*ROLE_SCOPES.values())
+print("scopes the connector defines :", sorted(KNOWN_SCOPES))
+print("scopes any role holds        :", sorted(declared))
+print("undefined scope in the table :", sorted(declared - KNOWN_SCOPES) or "none")
+print("unreachable scope            :", sorted(KNOWN_SCOPES - declared) or "none")
+print()
+for role in CONNECTOR_ROLES:
+    held = sorted(ROLE_SCOPES[role]) or ["(none)"]
+    print(f"  {role:<20} {', '.join(held)}")
+
+scopes the connector defines : ['assignments:read', 'notes:read', 'submissions:read']
+scopes any role holds        : ['assignments:read', 'notes:read', 'submissions:read']
+undefined scope in the table : none
+unreachable scope            : none
+
+  anonymous            (none)
+  course_faculty       assignments:read, notes:read, submissions:read
+  student              assignments:read, notes:read
+  teaching_assistant   assignments:read, notes:read, submissions:read
+
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+# Four endpoints x four roles = sixteen cells, each actually called rather than
+# predicted from the table. The verdict is derived by asking the connector.
+rows = lab05.access_matrix(registry, "CS201", registry.names())
+lab05._print_matrix(rows, registry.names())
+
+allowed = [r for r in rows if r.outcome == "allowed"]
+refused = [r for r in rows if r.outcome == "refused"]
+print(f"  {len(allowed)} allowed, {len(refused)} refused of {len(rows)} call(s); "
+      f"every refusal is in the ledger.")
+
+  role                scopes   list_courses             read_assignment_rubrics  read_notes_store         read_submission_records  
+  ---------------------------------------------------------------------------------------------------------------------------------
+  anonymous           none     R                        R                        R                        R                        
+  course_faculty      assignments:read, notes:read, submissions:read2                        3                        8                        8                        
+  student             assignments:read, notes:read2                        3                        8                        R                        
+  teaching_assistant  assignments:read, notes:read, submissions:read2                        3                        8                        8                        
+
+  cell = record count when allowed, R = refused by policy, ! = refused some other way
+  roles are this project's choice (docs/lab05.md section b); the document says only
+  "access control per role" (doc 2.3).
+  11 allowed, 5 refused of 16 call(s); every refusal is in the ledger.
+
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+# The interesting cell is the student one, and it is a *pair*. A student may
+# read the notes store but not the cohort's submissions. Both halves matter: a
+# policy that refused everything to a student would satisfy "students cannot read
+# submissions" while being broken.
+student = {r.endpoint: r for r in rows if r.role == "student"}
+for endpoint, row in student.items():
+    marker = row.cell
+    detail = f"{row.record_count} record(s)" if row.outcome == "allowed" else row.error
+    print(f"  student -> {endpoint:<26} [{marker}] {detail}")
+
+allowed = [r for r in rows if r.role == "student" and r.outcome == "allowed"]
+refused = [r for r in rows if r.role == "student" and r.outcome == "refused"]
+assert allowed and refused, "the policy must discriminate, not blanket-deny"
+print()
+print(f"student: {len(allowed)} allowed, {len(refused)} refused - it discriminates.")
+
+  student -> list_courses               [2] 2 record(s)
+  student -> read_assignment_rubrics    [3] 3 record(s)
+  student -> read_notes_store           [8] 8 record(s)
+  student -> read_submission_records    [R] ConnectorPolicyError
+
+student: 3 allowed, 1 refused - it discriminates.
+
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+# A refusal is cheap, because the scope check runs before the read. Timed on
+# the same call set; loose as an inequality, but it fails loudly if the check is
+# ever moved after the handler.
+allowed_times = [r.elapsed_ms for r in rows if r.outcome == "allowed"]
+refused_times = [r.elapsed_ms for r in rows if r.outcome == "refused"]
+print(f"slowest allowed : {max(allowed_times):.2f}ms")
+print(f"slowest refused : {max(refused_times):.2f}ms")
+assert max(refused_times) < max(allowed_times)
+print()
+print("A refusal never paid for a read it was going to refuse.")
+
+slowest allowed : 1.76ms
+slowest refused : 0.10ms
+
+A refusal never paid for a read it was going to refuse.
+
+
+### An unknown filter is refused with the real values
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+from course_organizer.connector.errors import ConnectorError
+
+try:
+    registry.invoke(
+        "read_notes_store", {"course_code": "CS201", "unit": "unit-99"},
+        token=TOKEN,
+    ).unwrap()
+except ConnectorError as exc:
+    print(f"{type(exc).__name__}:")
+    print(" ", exc)
+
+ConnectorNotFoundError:
+  course 'CS201' has no unit 'unit-99'. Its units are ['1', '2', '3', '4', '5']. Note that the seed corpus names units by bare number ('1'), not 'Unit 1'.
+
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+# And the connector's surface is *narrower* than the tool layer's. The tools
+# accept `current_only`; the connector does not, so passing it is refused as an
+# unexpected argument. An agent cannot ask the connector for something the
+# connector has not agreed to expose.
+try:
+    registry.invoke(
+        "read_notes_store",
+        {"course_code": "CS201", "current_only": True},
+        token=TOKEN,
+    ).unwrap()
+except ConnectorError as exc:
+    print(f"{type(exc).__name__}:")
+    print(" ", exc)
+
+ConnectorContractError:
+  arguments for 'read_notes_store' do not match NotesQuery: 1 problem(s); first: ('current_only',) Extra inputs are not permitted
+
+
+## 4. The same connector over a real MCP subprocess
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+import json
+
+from course_organizer.connector.client import contract_from_registry
+from course_organizer.connector.errors import ConnectorContractError
+
+contract = contract_from_registry(registry)
+print("endpoints in the contract:", contract.names())
+for name in contract.names():
+    print(f"  {name:<26} -> {contract.model_for(name).__name__}")
+print()
+print("and it publishes a plain JSON schema for the same endpoint, so a model")
+print("can be shown the tool with no conversion layer in between:")
+print()
+print(json.dumps(registry.schemas()["read_notes_store"]["input"]["properties"],
+                 indent=2))
+
+endpoints in the contract: ['list_courses', 'read_assignment_rubrics', 'read_notes_store', 'read_submission_records']
+  list_courses               -> CourseListResult
+  read_assignment_rubrics    -> AssignmentResult
+  read_notes_store           -> NotesResult
+  read_submission_records    -> SubmissionResult
+
+and it publishes a plain JSON schema for the same endpoint, so a model
+can be shown the tool with no conversion layer in between:
+
+{
+  "course_code": {
+    "description": "Course code, e.g. CS201.",
+    "minLength": 1,
+    "title": "Course Code",
+    "type": "string"
+  },
+  "unit": {
+    "anyOf": [
+      {
+        "type": "string"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "default": null,
+    "description": "Optional unit filter. Use the exact unit id the course declares, which list_courses and the unfiltered read reveal -- for the seed corpus those are '1'..'5', not 'Unit 1'.",
+    "title": "Unit"
+  }
+}
+
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+from course_organizer.connector.endpoints import NotesResult
+
+# A real answer validates.
+good = registry.invoke(
+    "read_notes_store", {"course_code": "CS201"}, token=TOKEN
+).unwrap()
+rebuilt = contract.validate("read_notes_store", good.model_dump(mode="json"))
+print(f"real answer  : validated as {type(rebuilt).__name__}, "
+      f"{rebuilt.note_count} note(s)")
+
+# One missing field does not.
+tampered = good.model_dump(mode="json")
+tampered.pop("provenance")
+try:
+    contract.validate("read_notes_store", tampered)
+except ConnectorContractError as exc:
+    print(f"tampered     : {type(exc).__name__}")
+    print(" ", exc)
+
+real answer  : validated as NotesResult, 8 note(s)
+tampered     : ConnectorContractError
+  endpoint 'read_notes_store' returned a payload that does not match its declared NotesResult: 1 problem(s); first: ('provenance',) Field required
+
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+# The child's environment is where the credential goes. The argument list has no
+# token in it, and never will - so a transcript of the command line is not a
+# credential leak.
+from course_organizer.connector.client import server_command
+
+argv, args, env_additions = server_command(source="local")
+print("argv :", argv)
+print("args :", args)
+print()
+print("env additions (layered on top of this process's own environment):")
+for key, value in env_additions.items():
+    print(f"  {key:<14} {value}")
+print()
+print("'--token' in args :", "--token" in args)
+print("token in args    :", any(TOKEN in part for part in args))
+print("token in argv    :", any(TOKEN in part for part in [argv, *args]))
+print()
+print("sys.executable, not the bare string 'python' - so a virtualenv client")
+print("cannot spawn a system interpreter that lacks mcp.")
+
+argv : C:\Users\ummea\.virtualenvs\course-organizer\Scripts\python.exe
+args : ['-m', 'course_organizer.connector.mcp_server', '--source', 'local']
+
+env additions (layered on top of this process's own environment):
+  PYTHONPATH     C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer
+
+'--token' in args : False
+token in args    : False
+token in argv    : False
+
+sys.executable, not the bare string 'python' - so a virtualenv client
+cannot spawn a system interpreter that lacks mcp.
+
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+# The refusal, over the wire. This spawns a real server process and costs a few
+# seconds; it is the same cost a deployment pays, not a mock.
+from course_organizer.connector.client import McpConnectorClient
+from course_organizer.connector.errors import ConnectorPolicyError
+
+mcp = McpConnectorClient(contract=contract, token=TOKEN, source="local", role="student")
+try:
+    print("tools the spawned server advertises:", mcp.names())
+    print("descriptor:", mcp.descriptor())
+    print()
+    mcp.read("read_submission_records", {"course_code": "CS201"})
+except ConnectorPolicyError as exc:
+    print(f"{type(exc).__name__}:")
+    print(" ", exc)
+finally:
+    mcp.close()
+
+tools the spawned server advertises: ['list_courses', 'read_assignment_rubrics', 'read_notes_store', 'read_submission_records']
+descriptor: name='local_seed' transport='local JSON files' provenance='data/seed' writable=False requires_source_credentials=False swap_note='reported by the connector server over MCP'
+
+ConnectorPolicyError:
+  principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+from course_organizer.connector.errors import tag_for_wire, untag_from_wire
+
+error = ConnectorPolicyError(
+    "principal 'student@example.edu' (role 'student') may not call "
+    "'read_submission_records': it needs the scope 'submissions:read'."
+)
+wire_text = f"Error executing tool read_submission_records: {tag_for_wire(error)}"
+
+print("on the wire:")
+print(" ", wire_text)
+print()
+name, body = untag_from_wire(wire_text)
+print(f"decoded type  : {name}")
+print(f"decoded body  : {body}")
+print()
+# The tag is found anywhere in the text, because the server wraps it first.
+assert name == "ConnectorPolicyError"
+assert "[ConnectorPolicyError]" not in body, "the tag must not leak to the caller"
+print("The tag survives the server's wrapper, and does not reach the caller.")
+
+on the wire:
+  Error executing tool read_submission_records: [ConnectorPolicyError] principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read'.
+
+decoded type  : ConnectorPolicyError
+decoded body  : principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read'.
+
+The tag survives the server's wrapper, and does not reach the caller.
+
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+# And the converse: an untagged error is *not* guessed into a policy failure.
+# An unrecognised server error is a bug or a crash, and must not masquerade as
+# a policy decision.
+print(untag_from_wire("Error executing tool x: something went wrong in the adapter"))
+print(untag_from_wire("Error executing tool x: [NotAnErrorClass] boom"))
+print()
+print("The first has no type, the second names a type the connector does not")
+print("define. Both are reported as transport failures, which is correct: a")
+print("refusal the client cannot prove is not a refusal it should act on.")
+
+(None, 'Error executing tool x: something went wrong in the adapter')
+('NotAnErrorClass', 'boom')
+
+The first has no type, the second names a type the connector does not
+define. Both are reported as transport failures, which is correct: a
+refusal the client cannot prove is not a refusal it should act on.
+
+
+## 5. Payload parity, field path by field path
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+from course_organizer.labs.lab05_mcp_connector import (
+    CLOCK_PATHS, IGNORED_PATH_REASON, _flatten,
+)
+
+direct = registry.invoke("read_notes_store", {"course_code": "CS201"}, token=TOKEN).unwrap()
+flat = _flatten(direct.model_dump(mode="json"))
+
+print(f"{len(flat)} leaf path(s) in one read_notes_store result. A sample:\n")
+for path in sorted(flat)[:14]:
+    print(f"  {path:<46} {str(flat[path])[:40]}")
+print("  ...")
+print()
+print("excluded from comparison:", CLOCK_PATHS)
+print("reason                 :", IGNORED_PATH_REASON)
+
+159 leaf path(s) in one read_notes_store result. A sample:
+
+  course_code                                    CS201
+  declared_units[0]                              1
+  declared_units[1]                              2
+  declared_units[2]                              3
+  declared_units[3]                              4
+  declared_units[4]                              5
+  note_count                                     8
+  notes[0].kind                                  lecture_notes
+  notes[0].note_id                               ds-u1-linked-lists
+  notes[0].tags[0]                               linked-list
+  notes[0].tags[1]                               pointers
+  notes[0].tags[2]                               memory
+  notes[0].tags[3]                               traversal
+  notes[0].title                                 Singly and Doubly Linked Lists
+  ...
+
+excluded from comparison: ('provenance.fetched_at',)
+reason                 : a wall-clock reading taken in a different process; every other field is compared
+
+
+------------------------------------------------------------------------------
+In [21]:
+------------------------------------------------------------------------------
+# What the flattening is *for*: naming the one field that differs, instead of
+# reporting that the payloads differ.
+direct = {"provenance": {"fetched_at": "t1", "sources": ["a"]}, "count": 8}
+wire = {"provenance": {"fetched_at": "t2", "sources": ["a"]}, "count": 8}
+
+a, b = _flatten(direct), _flatten(wire)
+print("paths compared :", len(set(a) | set(b)))
+print("differing      :", [p for p in sorted(set(a) | set(b)) if a.get(p) != b.get(p)])
+print()
+print("Without flattening that is one bit -- 'the payloads differ' -- and the")
+print("reader has to guess which of the four endpoints is broken and why.")
+
+paths compared : 3
+differing      : ['provenance.fetched_at']
+
+Without flattening that is one bit -- 'the payloads differ' -- and the
+reader has to guess which of the four endpoints is broken and why.
+
+
+------------------------------------------------------------------------------
+In [22]:
+------------------------------------------------------------------------------
+# The real comparison, over the wire. All four endpoints, both clients.
+report = lab05.compare_transports(
+    token=TOKEN, course_code="CS201", contract=contract, registry=registry, source="local"
+)
+
+for row in report.parity:
+    print(f"{row.endpoint:<26} {row.verdict()}")
+print()
+print(f"not compared: {', '.join(CLOCK_PATHS)}")
+print(f"             {IGNORED_PATH_REASON}")
+print()
+print(f"payloads identical : {report.payloads_identical}")
+print(f"tools advertised   : {report.tool_count}")
+print(f"connection names   : {report.server_names}  (empty = one unnamed stdio connection)")
+
+list_courses               11 leaf field(s) identical
+read_notes_store           159 leaf field(s) identical
+read_assignment_rubrics    74 leaf field(s) identical
+read_submission_records    85 leaf field(s) identical
+
+not compared: provenance.fetched_at
+             a wall-clock reading taken in a different process; every other field is compared
+
+payloads identical : True
+tools advertised   : 4
+connection names   : ([], [])  (empty = one unnamed stdio connection)
+
+
+------------------------------------------------------------------------------
+In [23]:
+------------------------------------------------------------------------------
+print("spawning and the four warm calls, on one held-open session:")
+print(f"  spawn                {report.startup_ms:>9.1f}ms")
+for outcome, elapsed in zip(report.outcomes, report.warm_call_ms):
+    print(f"  {outcome.endpoint:<22} {elapsed:>9.1f}ms")
+print(f"  {'total':<22} {report.total_warm_ms:>9.1f}ms")
+print()
+print(f"session reused       : {report.session_is_reused}")
+print(f"a per-call respawn would have cost about "
+      f"{len(report.warm_call_ms) * report.startup_ms:.0f}ms.")
+print()
+print("The comparison is the aggregate of four calls against one spawn, not a")
+print("mean: one slow call in four is enough to make a respawn look healthy.")
+
+spawning and the four warm calls, on one held-open session:
+  spawn                   2557.3ms
+  list_courses                21.4ms
+  read_notes_store            25.8ms
+  read_assignment_rubrics      19.9ms
+  read_submission_records      19.9ms
+  total                       86.9ms
+
+session reused       : True
+a per-call respawn would have cost about 10229ms.
+
+The comparison is the aggregate of four calls against one spawn, not a
+mean: one slow call in four is enough to make a respawn look healthy.
+
+
+------------------------------------------------------------------------------
+In [24]:
+------------------------------------------------------------------------------
+print("refusals over the wire, one server per role:")
+print()
+print("  the role travels in the server's ENVIRONMENT, never as an argument, so")
+print("  serving a second role necessarily means a second process.")
+print()
+for refusal in report.refusals:
+    print(f"  {refusal.role:<12} {refusal.outcome:<8} {refusal.error:<24} "
+          f"{refusal.elapsed_ms:>8.1f}ms  (spawn + call)")
+print()
+print(f"spawns for refusals  : {report.spawns_per_refusal_role}")
+print("unavoidable, and reported separately from the warm calls above --")
+print("folding it in would make one endpoint look pathologically slow.")
+
+refusals over the wire, one server per role:
+
+  the role travels in the server's ENVIRONMENT, never as an argument, so
+  serving a second role necessarily means a second process.
+
+  student      refused  ConnectorPolicyError       3904.9ms  (spawn + call)
+  anonymous    refused  ConnectorPolicyError       2446.2ms  (spawn + call)
+
+spawns for refusals  : 2
+unavoidable, and reported separately from the warm calls above --
+folding it in would make one endpoint look pathologically slow.
+
+
+## 6. Swapping a source changes no agent code
+
+------------------------------------------------------------------------------
+In [25]:
+------------------------------------------------------------------------------
+swap = lab05.measure_source_swap(
+    token=TOKEN, run_id="nb-lab05", before_source="local", after_source="in_memory",
+)
+
+print("the agent, executed from one tuple for both legs:")
+for line in swap.code:
+    print(f"  {line}")
+print()
+print("  no branch on `source` anywhere in those lines - that is the claim.")
+
+the agent, executed from one tuple for both legs:
+  registry = build_default_connector(source=source, token=token)
+  readers.use_connector(registry, token)
+  tools = build_lab04_registry(run_id=f"{run_id}/{source}")
+  tools.invoke("read_notes_store", {"course_code": course})
+
+  no branch on `source` anywhere in those lines - that is the claim.
+
+
+------------------------------------------------------------------------------
+In [26]:
+------------------------------------------------------------------------------
+print("before leg:")
+print(f"  {swap.before.render()}")
+print()
+print("after leg:")
+print(f"  {swap.after.render()}")
+
+before leg:
+  SOURCE_ADAPTER=local      -> 'Data Structures'
+                             notes=8  provenance=data/seed/data_structures/notes.json
+
+after leg:
+  SOURCE_ADAPTER=in_memory  -> 'In-memory exchange course'
+                             notes=1  provenance=in-memory://ZZ999/notes
+
+
+------------------------------------------------------------------------------
+In [27]:
+------------------------------------------------------------------------------
+print("unchanged across the swap:")
+print(f"  tools        {len(swap.tool_names)}: {', '.join(swap.tool_names)}")
+print(f"  query keys   {swap.query_keys}")
+print(f"  result type  {swap.result_type}")
+print(f"  agent code   {len(swap.code)} lines, executed twice, byte-identical")
+print()
+print("changed:")
+print(f"  course       {swap.before.course_name!r} -> {swap.after.course_name!r}")
+print(f"  records      {swap.before.note_count} -> {swap.after.note_count}")
+print(f"  provenance   {swap.before.source_files} -> {swap.after.source_files}")
+print()
+print(f"same agent code   : {swap.same_agent_code}")
+print(f"data changed      : {swap.data_actually_changed}")
+
+unchanged across the swap:
+  tools        4: compute_scope_validation, read_assignment_rubrics, read_notes_store, read_submission_records
+  query keys   ('course_code',)
+  result type  NotesReadResult
+  agent code   4 lines, executed twice, byte-identical
+
+changed:
+  course       'Data Structures' -> 'In-memory exchange course'
+  records      8 -> 1
+  provenance   ('data/seed/data_structures/notes.json',) -> ('in-memory://ZZ999/notes',)
+
+same agent code   : True
+data changed      : True
+
+
+## 7. The pitfall, measured rather than demonstrated by breaking something
+
+------------------------------------------------------------------------------
+In [28]:
+------------------------------------------------------------------------------
+bypass = lab05.demonstrate_bypass(registry, TOKEN, "CS201")
+print(bypass.render())
+
+  as course_faculty : 8 submission record(s) for CS201
+  as student       : REFUSED ConnectorPolicyError
+                     principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  same student, read_notes_store : ALLOWED, 8 note(s)
+  so the refusal is scope-based, not a blanket deny
+
+  what the governed path leaves behind:
+    ledger rows for read_submission_records : 3
+    names the caller                        : True
+    names the missing scope                : True
+
+  where a caller would put a credential to escalate:
+    ConnectorClient.read(endpoint, payload)
+    -> nothing. The token is held by the client, not the call.
+
+
+------------------------------------------------------------------------------
+In [29]:
+------------------------------------------------------------------------------
+print(f"records governance withheld from the student : {bypass.withheld_records}")
+print(f"what they are                               : {bypass.withheld_description}")
+print(f"the student's error                         : {bypass.student_error}")
+print()
+print(f"the student's own notes read                : {bypass.student_own_read_allowed} record(s)")
+print(f"  -> the refusal is about the cohort's submissions, not about the student")
+print()
+print(f"ledger rows naming that endpoint            : {bypass.ledger_rows_for_endpoint}")
+print(f"  ... naming the caller                      : {bypass.ledger_names_the_caller}")
+print(f"  ... naming the missing scope               : {bypass.ledger_names_the_scope}")
+
+records governance withheld from the student : 8
+what they are                               : submission record(s) for CS201
+the student's error                         : ConnectorPolicyError
+
+the student's own notes read                : 8 record(s)
+  -> the refusal is about the cohort's submissions, not about the student
+
+ledger rows naming that endpoint            : 3
+  ... naming the caller                      : True
+  ... naming the missing scope               : True
+
+
+------------------------------------------------------------------------------
+In [30]:
+------------------------------------------------------------------------------
+# There is no parameter through which to escalate. The client's read method
+# takes an endpoint and a payload; it holds the credential, it cannot be handed
+# one.
+import inspect
+
+from course_organizer.connector.client import InProcessConnectorClient, McpConnectorClient
+
+for cls in (InProcessConnectorClient, McpConnectorClient):
+    params = list(inspect.signature(cls.read).parameters)
+    print(f"  {cls.__name__:<26} read({', '.join(params[1:])})")
+print()
+print(f"detected escalation seam : {bypass.escalation_seam}")
+print(f"no escalation parameter  : {bypass.no_escalation_parameter}")
+
+  InProcessConnectorClient   read(endpoint, payload)
+  McpConnectorClient         read(endpoint, payload)
+
+detected escalation seam : (endpoint, payload)
+no escalation parameter  : True
+
+
+## 8. Every call is on a ledger, including the refusals
+
+------------------------------------------------------------------------------
+In [31]:
+------------------------------------------------------------------------------
+print(registry.ledger.report())
+
+  1. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 1.8ms
+  2. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 1.7ms
+  3. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 2.1ms
+  4. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 1.2ms
+  5. list_courses             refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'list_courses': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  6. read_assignment_rubrics  refused  anonymous (anonymous) scope=assignments:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_assignment_rubrics': it needs the scope 'assignments:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  7. read_notes_store         refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_notes_store': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  8. read_submission_records  refused  anonymous (anonymous) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  9. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 1.2ms
+ 10. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 1.2ms
+ 11. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 1.4ms
+ 12. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 1.7ms
+ 13. list_courses             allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=2 0.6ms
+ 14. read_assignment_rubrics  allowed  student@example.edu (student) scope=assignments:read source=local_seed transport=in_process records=3 1.7ms
+ 15. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 1.2ms
+ 16. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 17. list_courses             allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=2 0.6ms
+ 18. read_assignment_rubrics  allowed  ta@example.edu (teaching_assistant) scope=assignments:read source=local_seed transport=in_process records=3 0.9ms
+ 19. read_notes_store         allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=8 1.1ms
+ 20. read_submission_records  allowed  ta@example.edu (teaching_assistant) scope=submissions:read source=local_seed transport=in_process records=8 1.5ms
+ 21. read_notes_store         refused  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=0 1.1ms error=ConnectorNotFoundError: course 'CS201' has no unit 'unit-99'. Its units are ['1', '2', '3', '4', '5']. Note that the seed corpus names units by bare number ('1'), not 'Unit 1'.
+ 22. read_notes_store         refused  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=0 1.0ms error=ConnectorContractError: arguments for 'read_notes_store' do not match NotesQuery: 1 problem(s); first: ('current_only',) Extra inputs are not permitted
+ 23. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 2.3ms
+ 24. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 3.0ms
+ 25. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 2.4ms
+ 26. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 3.4ms
+ 27. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 3.6ms
+ 28. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 7.1ms
+ 29. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 5.5ms
+ 30. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 31. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 2.6ms
+-- 31 call(s), 8 refused, 0 failed, 129 record(s), 52.2ms, fingerprint de74b6f112b2f71c
+
+
+------------------------------------------------------------------------------
+In [32]:
+------------------------------------------------------------------------------
+# Both layers, because they are both now in play: connector calls (this lab) and
+# tool calls (Lab 2's layer, now reading *through* the connector).
+#
+# This is the whole lab in one call -- including the three MCP spawns -- so it
+# runs every check the CLI runs.
+result = lab05.run_mcp_connector(
+    run_id="nb-lab05/full", token=TOKEN, course_code="CS201", with_mcp=True
+)
+print("connector calls:")
+print(result.ledger_report)
+print()
+print("tool calls (Lab 2's layer):")
+print(result.tools_ledger_report)
+
+connector calls:
+  1. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 4.3ms
+  2. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 3.1ms
+  3. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 3.3ms
+  4. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 1.2ms
+  5. list_courses             refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'list_courses': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  6. read_assignment_rubrics  refused  anonymous (anonymous) scope=assignments:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_assignment_rubrics': it needs the scope 'assignments:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  7. read_notes_store         refused  anonymous (anonymous) scope=notes:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_notes_store': it needs the scope 'notes:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  8. read_submission_records  refused  anonymous (anonymous) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'anonymous' (role 'anonymous') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds none. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+  9. list_courses             allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=2 1.7ms
+ 10. read_assignment_rubrics  allowed  faculty@example.edu (course_faculty) scope=assignments:read source=local_seed transport=in_process records=3 2.0ms
+ 11. read_notes_store         allowed  faculty@example.edu (course_faculty) scope=notes:read source=local_seed transport=in_process records=8 1.9ms
+ 12. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 2.6ms
+ 13. list_courses             allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=2 1.0ms
+ 14. read_assignment_rubrics  allowed  student@example.edu (student) scope=assignments:read source=local_seed transport=in_process records=3 1.6ms
+ 15. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 1.9ms
+ 16. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 17. list_courses             allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=2 1.0ms
+ 18. read_assignment_rubrics  allowed  ta@example.edu (teaching_assistant) scope=assignments:read source=local_seed transport=in_process records=3 1.8ms
+ 19. read_notes_store         allowed  ta@example.edu (teaching_assistant) scope=notes:read source=local_seed transport=in_process records=8 3.1ms
+ 20. read_submission_records  allowed  ta@example.edu (teaching_assistant) scope=submissions:read source=local_seed transport=in_process records=8 4.4ms
+ 21. read_submission_records  allowed  faculty@example.edu (course_faculty) scope=submissions:read source=local_seed transport=in_process records=8 4.0ms
+ 22. read_submission_records  refused  student@example.edu (student) scope=submissions:read source=local_seed transport=in_process records=0 0.0ms error=ConnectorPolicyError: principal 'student@example.edu' (role 'student') may not call 'read_submission_records': it needs the scope 'submissions:read' and holds assignments:read, notes:read. Doc 2.3 requires access control per role; the policy table is course_organizer.connector.auth.ROLE_SCOPES.
+ 23. read_notes_store         allowed  student@example.edu (student) scope=notes:read source=local_seed transport=in_process records=8 3.4ms
+-- 23 call(s), 6 refused, 0 failed, 92 record(s), 42.4ms, fingerprint d0c917b9850376bd
+
+tool calls (Lab 2's layer):
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     6.20  ok
+  2  read_assignment_rubrics         0     3.30  ok
+  3  read_submission_records         0     3.36  ok
+-------------------------------------------------------
+  3  TOTAL                                12.87  0 failed
+
+
+## 9. The whole lab, end to end
+
+------------------------------------------------------------------------------
+In [33]:
+------------------------------------------------------------------------------
+print(f"run id  : {result.run_id}")
+print(f"source  : {result.source}  (swap leg: {result.swap.after.source})")
+print(f"course  : {result.course_code}")
+print(f"elapsed : {result.total_elapsed_ms:.1f}ms")
+print()
+print(f"{len(result.checks)} check(s), {len(result.rows)} access cells")
+
+run id  : nb-lab05/full
+source  : local  (swap leg: in_memory)
+course  : CS201
+elapsed : 6752.4ms
+
+18 check(s), 16 access cells
+
+
+------------------------------------------------------------------------------
+In [34]:
+------------------------------------------------------------------------------
+skipped = result.skipped_labels
+for label, passed, detail in result.checks:
+    mark = "SKIP" if label in skipped else ("PASS" if passed else "FAIL")
+    print(f"[{mark}] {label}")
+    print(f"       {detail}")
+print()
+print("OVERALL:", "PASS" if result.passed else f"FAIL {result.failed}")
+
+[PASS] the document's three reads are exposed as endpoints
+       read_notes_store, read_assignment_rubrics, read_submission_records
+[PASS] every documented read returned data to a full-scope caller
+       read_notes_store=8, read_assignment_rubrics=3, read_submission_records=8
+[PASS] every read reports where its data came from
+       4 result(s), each with provenance.sources
+[PASS] the added endpoint is labelled as this project's, not the document's
+       list_courses: added by Lab 5, not a documented requirement
+[PASS] every endpoint declares the scope it needs
+       read_notes_store->notes:read, read_assignment_rubrics->assignments:read, read_submission_records->submissions:read, list_courses->notes:read
+[PASS] auth is enforced per role, not per caller
+       11 allowed, 5 refused of 16 call(s)
+[PASS] every refusal arrived as a typed policy failure
+       ConnectorPolicyError
+[PASS] a student may read the notes but not the cohort's submissions
+       the refusal discriminates on scope
+[PASS] a real MCP subprocess served every call
+       4 tool(s) over stdio, names=([], [])
+[PASS] the wire and the in-process client return identical payloads
+       list_courses: 11 leaf field(s) identical, read_notes_store: 159 leaf field(s) identical, read_assignment_rubrics: 74 leaf field(s) identical, read_submission_records: 85 leaf field(s) identical
+[PASS] a refusal survives the wire as a typed policy failure
+       student->ConnectorPolicyError, anonymous->ConnectorPolicyError
+[PASS] the MCP session is reused rather than respawned per call
+       4 calls in 50.5ms against a 2075.5ms spawn (a per-call respawn would cost about 8302ms)
+[PASS] each refused role needed its own server spawn
+       2 spawn(s) for 2 role(s): the role travels in the server's environment, never on the wire
+[PASS] swapping the source needed no agent change
+       same 4 tool(s), same query keys ('course_code',), same NotesReadResult
+[PASS] the swap really changed the data's origin
+       local:'Data Structures' -> in_memory:'In-memory exchange course'
+[PASS] the pitfall withheld real data from the unauthorised role
+       8 record(s) withheld; student got ConnectorPolicyError
+[PASS] the refusal is auditable: the ledger names caller and scope
+       3 row(s), caller=True, scope=True
+[PASS] there is no parameter a caller could use to escalate
+       read(endpoint, payload)
+
+OVERALL: PASS
+
+
+------------------------------------------------------------------------------
+In [35]:
+------------------------------------------------------------------------------
+fast = lab05.run_mcp_connector(
+    run_id="nb-lab05/fast", token=TOKEN, course_code="CS201", with_mcp=False
+)
+print(f"with_mcp = {fast.with_mcp}")
+print(f"passed   = {fast.passed}, failed = {len(fast.failed)}")
+print(f"skipped  = {len(fast.skipped)} of {len(fast.checks)} checks")
+print()
+for label, _, detail in fast.skipped:
+    print(f"  [SKIP] {label}")
+    print(f"         {detail}")
+
+with_mcp = False
+passed   = True, failed = 0
+skipped  = 5 of 18 checks
+
+  [SKIP] a real MCP subprocess served every call
+         NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] the wire and the in-process client return identical payloads
+         NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] a refusal survives the wire as a typed policy failure
+         NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] the MCP session is reused rather than respawned per call
+         NOT RUN (--no-mcp); not evidence for this claim
+  [SKIP] each refused role needed its own server spawn
+         NOT RUN (--no-mcp); not evidence for this claim
+
+
+## 10. What this lab does not do
+
+------------------------------------------------------------------------------
+In [36]:
+------------------------------------------------------------------------------
+print("lab05 CLI :  python -m course_organizer.labs.lab05_mcp_connector")
+print("              --no-mcp                # skip the subprocess; transport -> SKIP")
+print("              --course CS201          # which course to exercise")
+print("              --swap-source in_memory # the other leg of the swap")
+print("              --run-id <id>           # reproducible run id")
+print()
+print("mcp server:  python -m course_organizer.connector.mcp_server --describe")
+print()
+print("tests      :  python -m pytest tests/test_lab05_mcp_connector.py")
+print("              python -m pytest tests/test_lab05_lab_module.py")
+print("              python -m pytest                    # all labs so far")
+
+lab05 CLI :  python -m course_organizer.labs.lab05_mcp_connector
+              --no-mcp                # skip the subprocess; transport -> SKIP
+              --course CS201          # which course to exercise
+              --swap-source in_memory # the other leg of the swap
+              --run-id <id>           # reproducible run id
+
+mcp server:  python -m course_organizer.connector.mcp_server --describe
+
+tests      :  python -m pytest tests/test_lab05_mcp_connector.py
+              python -m pytest tests/test_lab05_lab_module.py
+              python -m pytest                    # all labs so far
+
+
+==============================================================================
+end of notebook - 54 cells, 0 errors
+==============================================================================

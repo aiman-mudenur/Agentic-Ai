@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agentic-course-organizer
+# Worklet 2 — "Course Project, Notes & Assignment Organizer" (Book Chapter 2)
+#
+# EVERY pin below was install-tested on:
+#   Windows 11 · Python 3.14.7 · win_amd64
+# Do not upgrade mcp past 1.x without re-testing langchain-mcp-adapters.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core agent framework ────────────────────────────────────────────────────
+langchain==1.4.3
+langchain-core==1.6.6
+langgraph==1.2.12
+
+# ── LLM: Gemini free tier ───────────────────────────────────────────────────
+langchain-google-genai==4.4.0
+google-genai==2.25.0
+
+# ── MCP connector (Lab 5) ───────────────────────────────────────────────────
+# !! mcp MUST be 1.x: langchain-mcp-adapters==0.3.2 requires "mcp<2.0.0,>=1.24.0"
+# !! while mcp's latest is 2.2.0. Pinning 2.2.0 => ResolutionImpossible. Verified.
+mcp==1.30.0
+langchain-mcp-adapters==0.3.2
+
+# ── Durable checkpoints (Lab 6: resume after a real process crash) ──────────
+langgraph-checkpoint-sqlite==3.1.1
+
+# ── Google Drive / Classroom adapter (Lab 5) ────────────────────────────────
+# Built and mock-tested. Default stays OFF (SOURCE_ADAPTER=local), so you never
+# need a Google Cloud project. See docs/ for the optional live-setup steps.
+google-api-python-client==2.200.0
+google-auth-oauthlib==1.5.0
+google-auth-httplib2==0.4.3
+
+# ── Lab 4 embeddings: local, CPU-only, NO PyTorch (saves ~2.5 GB) ──────────
+fastembed==0.8.1
+
+# ── Config / validation / observability ─────────────────────────────────────
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+jsonschema==4.26.0
+tiktoken==0.14.0
+typer==0.27.2
+rich==15.0.0
+tqdm==4.70.1
+tenacity==9.1.4
+filelock==4.0.7
+
+# ── Notebooks (the Lab 1-8 deliverable format) ──────────────────────────────
+jupyterlab==4.6.4
+ipykernel==7.4.0
+
+# ── Tests ───────────────────────────────────────────────────────────────────
+pytest==9.1.1

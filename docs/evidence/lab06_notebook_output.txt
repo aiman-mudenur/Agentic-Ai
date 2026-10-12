@@ -1,0 +1,1210 @@
+Evidence - lab06_governed_runtime.ipynb
+============================
+
+Notebook : notebooks/lab06_governed_runtime.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 64 cells, 36 code, 36 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 6 - Runtime: skills, tools, memory, audit
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+import sys
+from pathlib import Path
+
+ROOT = Path.cwd().resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from course_organizer.labs import lab06_governed_runtime as lab06
+
+print("python  :", sys.version.split()[0])
+print("package :", ROOT / "src" / "course_organizer")
+
+python  : 3.14.7
+package : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer
+
+
+## The pitfall is the specification
+
+## 1. The document, quoted from the module that asserts it
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+print("LAB            :", lab06.LAB)
+print("goal           :", lab06.DOC_GOAL)
+print("deliverable    :", lab06.DOC_DELIVERABLE)
+print("nodes          :", lab06.DOC_NODES)
+print("pitfall        :", lab06.DOC_PITFALL)
+print("acceptance     :", lab06.DOC_ACCEPTANCE)
+print()
+print("pseudocode, verbatim:")
+print(lab06.DOC_PSEUDOCODE)
+
+LAB            : Lab 6
+goal           : Run the agent inside a controlled runtime with a full audit log.
+deliverable    : Runtime wrapping the agent: budgets, gates, checkpoint/resume, audit log.
+nodes          : Coordinator runtime around all nodes.
+pitfall        : Log inputs and outputs, not just messages; checkpoint before risky steps or resume loses state.
+acceptance     : Every action is logged with inputs/outputs; a crashed run resumes from its last checkpoint.
+
+pseudocode, verbatim:
+run = Runtime(budget=B, gates=[publish])
+for step in agent.loop():
+    audit.log(step.intent, step.action, step.result)
+    if step.risky: wait_for_approval(step)
+    checkpoint(run.state)
+
+
+## 2. The corrected order, side by side with the document's
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+for index, line in enumerate(lab06.RUNTIME_ORDER, start=1):
+    print(f"{index}. {line}")
+
+1. reserve budget (refuse before the action)
+2. check wall clock for an overrun already spent
+3. if step.risky: checkpoint(run.state)  <- pitfall: before, not after
+4. if step.risky: wait_for_approval(step)
+5. run the step
+6. charge what it actually cost
+7. audit.log(inputs, outputs)  <- pitfall: inputs AND outputs
+8. checkpoint(run.state)
+
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+doc_lines = [ln.strip() for ln in lab06.DOC_PSEUDOCODE.strip().splitlines() if ln.strip()]
+print("document pseudocode, line by line:")
+for line in doc_lines:
+    print("   ", line)
+
+print()
+print("runtime order has", len(lab06.RUNTIME_ORDER), "steps; the document lists",
+      len(doc_lines), "lines.")
+print("checkpoint-before-risky present :", any(
+    "checkpoint" in ln and "before" in ln for ln in lab06.RUNTIME_ORDER
+))
+print("budget reserved before the run   :", lab06.RUNTIME_ORDER[0].startswith("reserve"))
+print("audit records both halves         :", "inputs" in lab06.RUNTIME_ORDER[6]
+      and "outputs" in lab06.RUNTIME_ORDER[6])
+
+document pseudocode, line by line:
+    run = Runtime(budget=B, gates=[publish])
+    for step in agent.loop():
+    audit.log(step.intent, step.action, step.result)
+    if step.risky: wait_for_approval(step)
+    checkpoint(run.state)
+
+runtime order has 8 steps; the document lists 5 lines.
+checkpoint-before-risky present : True
+budget reserved before the run   : True
+audit records both halves         : True
+
+
+# 3. The components
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+from course_organizer.runtime import (
+    CHECKPOINT_NS,
+    DEFAULT_GATE,
+    DEFAULT_LIMITS,
+    DEFAULT_PRINCIPAL,
+    GENESIS_DIGEST,
+    HUMAN_AUTHORITY,
+    KIND_DIMENSION,
+    WRITE_SEQ_WIDTH,
+    ApprovalDecision,
+    ApprovalRequest,
+    AuditRecord,
+    Budget,
+    BudgetLedger,
+    CheckpointUnavailable,
+    DenyAllGate,
+    GateRefused,
+    JsonlAuditLog,
+    PreapprovedGate,
+    RecordingGate,
+    ResumeDivergence,
+    RunState,
+    Runtime,
+    ScriptedGate,
+    SqliteCheckpointStore,
+    Step,
+    StepContext,
+    plan_digest,
+)
+
+print("principal        :", DEFAULT_PRINCIPAL)
+print("human authority  :", HUMAN_AUTHORITY)
+print("default gate     :", DEFAULT_GATE)
+print()
+print("kind -> budget dimension:")
+for kind, dimension in sorted(KIND_DIMENSION.items()):
+    print(f"   {kind:<11} -> {dimension}")
+print()
+print("default ceilings:")
+for name, limit in DEFAULT_LIMITS.items():
+    print(f"   {name:<18} {limit}")
+
+principal        : apniLeap AURA Coordinator
+human authority  : course_faculty
+default gate     : publish
+
+kind -> budget dimension:
+   connector   -> connector_calls
+   llm         -> llm_calls
+   memory      -> skill_calls
+   skill       -> skill_calls
+   tool        -> tool_calls
+
+default ceilings:
+   steps              24
+   risky_steps        4
+   tool_calls         12
+   skill_calls        8
+   connector_calls    12
+   llm_calls          8
+   records_read       200
+   wall_clock_ms      120000
+
+
+## 3.1 Budgets, reserved before the action
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+ledger = BudgetLedger(Budget.defaults(), run_id="notebook")
+print("initial snapshots (bounded dimensions are reported even at zero):")
+for snap in ledger.snapshots():
+    print(f"   {snap.dimension:<18} {snap.spent}/{snap.limit}  refused={snap.refused}")
+
+ledger.reserve("tool_calls")
+ledger.reserve("tool_calls")
+print()
+print("after reserving two tool_calls:", ledger.spent())
+print("remaining tool_calls          :", ledger.remaining("tool_calls"))
+
+initial snapshots (bounded dimensions are reported even at zero):
+   steps              0/24  refused=0
+   risky_steps        0/4  refused=0
+   tool_calls         0/12  refused=0
+   skill_calls        0/8  refused=0
+   connector_calls    0/12  refused=0
+   llm_calls          0/8  refused=0
+   records_read       0/200  refused=0
+   wall_clock_ms      0/120000  refused=0
+
+after reserving two tool_calls: {'tool_calls': 2}
+remaining tool_calls          : 10
+
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+tiny = BudgetLedger(Budget.only(llm_calls=1), run_id="notebook")
+tiny.reserve("llm_calls")
+print("after one llm_call, remaining:", tiny.remaining("llm_calls"))
+
+from course_organizer.runtime import BudgetExceeded
+
+try:
+    tiny.reserve("llm_calls")
+except BudgetExceeded as exc:
+    print("second llm_call refused ->", type(exc).__name__)
+    print("  ", exc)
+    print("  refused so far:", tiny.refused("llm_calls"))
+
+after one llm_call, remaining: 0
+second llm_call refused -> BudgetExceeded
+   budget 'llm_calls' exhausted: 1 of 1 spent, and the next action requests 1. Doc 2.12 requires MAX_ATTEMPTS to be bounded and the run escalated to course faculty on exhaustion; the runtime refused rather than overspending.
+  refused so far: 1
+
+
+## 3.2 The audit log: inputs *and* outputs, hash-chained
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+import json
+import tempfile
+from pathlib import Path
+
+from course_organizer.runtime import build_audit_record
+
+work = Path(tempfile.mkdtemp(prefix="lab06_nb_"))
+log = JsonlAuditLog(work / "demo.jsonl", run_id="notebook")
+
+# `AuditRecord` cannot be constructed directly: digest and prev_digest are
+# required, so a record whose digest does not match its contents is not a
+# representable state. `build_audit_record` computes them.
+record = build_audit_record(
+    seq=1,
+    run_id="notebook",
+    thread_id="demo",
+    step="read_notes",
+    intent="Read the notes store through the connector",
+    action="read_notes_store",
+    kind="connector",
+    inputs={"course_code": "CS201", "principal": DEFAULT_PRINCIPAL},
+    outputs={"records": 8, "titles": ["Trees", "Graphs", "Hashing", "Heaps"]},
+    outcome="ok",
+    previous_digest=GENESIS_DIGEST,
+    principal=DEFAULT_PRINCIPAL,
+)
+log.append(record)
+
+print("chain verifies   :", log.verify())
+print("last digest      :", log.last_digest())
+print("fingerprint      :", log.fingerprint())
+print()
+print("the record as stored, one canonical line:")
+print(log.path.read_text(encoding="utf-8").strip()[:600])
+
+chain verifies   : 1
+last digest      : 56d36200e47f1423
+fingerprint      : 8e0b64707f24ea48
+
+the record as stored, one canonical line:
+{"action":"read_notes_store","at":"2026-10-01T17:41:40.754206Z","budget_spent":{},"checkpoint_id":"","decided_by":"","digest":"56d36200e47f1423","duration_ms":0.0,"error":"","gate":"","inputs":{"course_code":"CS201","principal":"apniLeap AURA Coordinator"},"intent":"Read the notes store through the connector","kind":"connector","outcome":"ok","outputs":{"records":8,"titles":["Trees","Graphs","Hashing","Heaps"]},"prev_digest":"0000000000000000","principal":"apniLeap AURA Coordinator","reason":"","risky":false,"role":"","run_id":"notebook","seq":1,"step":"read_notes","thread_id":"demo","token_fi
+
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+# Tamper A: edit a record in place.
+tampered = work / "tamper_a.jsonl"
+original = log.path.read_text(encoding="utf-8")
+# canonical_json writes no spaces after ':' -- do not guess the spacing.
+assert '"records":8' in original, "the rendering changed; fix this cell"
+tampered.write_text(original.replace('"records":8', '"records":99'), encoding="utf-8")
+
+from course_organizer.runtime import AuditIntegrityError
+
+try:
+    JsonlAuditLog(tampered, run_id="notebook").verify()
+except AuditIntegrityError as exc:
+    print("tamper A (edited an output) ->", type(exc).__name__)
+    print("   ", exc)
+
+tamper A (edited an output) -> AuditIntegrityError
+    audit chain broken at record 1: the record's content does not match its digest. Expected digest f9a34168afcee47b..., log carries 56d36200e47f1423.... Doc 2.12 requires a full audit log of what was published and who approved it; a log that fails its own integrity check cannot be relied on for that.
+
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+# Tamper B: remove a record from the middle.
+three_file = work / "chain3.jsonl"
+chain = JsonlAuditLog(three_file, run_id="notebook")
+prev = GENESIS_DIGEST
+for seq in (1, 2, 3):
+    record = build_audit_record(
+        seq=seq, run_id="notebook", thread_id="demo",
+        step=f"step{seq}", intent="i", action="a", kind="tool",
+        inputs={"n": seq}, outputs={"n": seq}, outcome="ok",
+        previous_digest=prev, principal=DEFAULT_PRINCIPAL,
+    )
+    chain.append(record)
+    prev = record.digest
+print("three-record chain verifies:", chain.verify(), "->", chain.fingerprint())
+print("bytes on disk              :", three_file.stat().st_size,
+      f"({three_file.stat().st_size // 3} per record)")
+
+lines = three_file.read_text(encoding="utf-8").strip().splitlines()
+cut = work / "tamper_b.jsonl"
+cut.write_text("\n".join(lines[:1] + lines[2:]) + "\n", encoding="utf-8")
+print("after removing record 2, records present:", len(JsonlAuditLog(cut).records()))
+
+try:
+    JsonlAuditLog(cut, run_id="notebook").verify()
+except AuditIntegrityError as exc:
+    print("tamper B (removed record 2) ->", type(exc).__name__)
+    print("   ", exc)
+
+three-record chain verifies: 3 -> c162305144861ccb
+bytes on disk              : 1326 (442 per record)
+after removing record 2, records present: 2
+tamper B (removed record 2) -> AuditIntegrityError
+    audit chain broken at record 3: the chain does not link to the preceding record; a record was removed, reordered or inserted. Expected digest c8a45d9b59ab0ed2..., log carries a28e02234a8ffd44.... Doc 2.12 requires a full audit log of what was published and who approved it; a log that fails its own integrity check cannot be relied on for that.
+
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+# Tamper C: claim a predecessor that is not the chain's.
+seed = JsonlAuditLog(work / "tamper_c.jsonl", run_id="notebook")
+seed.append(chain.records()[0])           # a legitimate first record
+print("chain expects the next record to chain to:", seed.last_digest())
+second = chain.records()[1]
+forged = second.model_copy(update={"prev_digest": GENESIS_DIGEST})  # wrong
+try:
+    seed.append(forged)
+except AuditIntegrityError as exc:
+    print("tamper C (forged prev_digest) ->", type(exc).__name__)
+    print("   ", exc)
+
+print()
+print("bytes on disk after the refused append:", seed.path.stat().st_size)
+print("records on disk:", len(seed.records()), "- the forgery was never stored")
+
+chain expects the next record to chain to: c8a45d9b59ab0ed2
+tamper C (forged prev_digest) -> AuditIntegrityError
+    audit chain broken at record 2: refused at append: prev_digest does not match the log. Expected digest c8a45d9b59ab0ed2..., log carries 0000000000000000.... Doc 2.12 requires a full audit log of what was published and who approved it; a log that fails its own integrity check cannot be relied on for that.
+
+bytes on disk after the refused append: 442
+records on disk: 1 - the forgery was never stored
+
+
+## 3.3 Checkpoints that can actually be resumed from
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+store = SqliteCheckpointStore(work / "ckpt.sqlite", run_id="notebook")
+print("namespace     :", CHECKPOINT_NS)
+print("id layout     :", WRITE_SEQ_WIDTH, "digits of ordinal, then a digest prefix")
+
+with store.session():
+    for index, cursor in enumerate(("read_notes", "draft_plan", "draft_grades")):
+        store.save(
+            RunState(
+                thread_id="demo",
+                run_id="notebook",
+                course_code="CS201",
+                step_index=index,
+                cursor=cursor,
+                completed=("read_notes", "draft_plan")[:index],
+                artifacts={"drafts": index},
+                spent={"steps": index + 1},
+            )
+        )
+
+    latest = store.load("demo")
+    print()
+    print("latest cursor :", latest.cursor, "(the third, not the first)")
+    print("latest step   :", latest.step_index)
+    print("latest spend  :", latest.spent)
+    print()
+    print("history, newest first:")
+    for ref in store.history("demo"):
+        print(f"   seq={ref.write_seq:<3} step={ref.cursor:<14} id={ref.checkpoint_id}")
+
+namespace     : course-organizer/runtime
+id layout     : 12 digits of ordinal, then a digest prefix
+
+
+latest cursor : draft_grades (the third, not the first)
+latest step   : 2
+latest spend  : {'steps': 3}
+
+history, newest first:
+
+   seq=3   step=draft_grades   id=000000000003-000000000000
+   seq=2   step=draft_plan     id=000000000002-000000000000
+   seq=1   step=read_notes     id=000000000001-000000000000
+
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+# An unknown thread is an error, not a fresh run. Reads need the store's
+# session, because a session *is* the connection and the store does not keep
+# one open between calls - a durability store that did would leak handles.
+with store.session():
+    try:
+        store.require("never-seen")
+    except CheckpointUnavailable as exc:
+        print("require('never-seen') ->", type(exc).__name__)
+        print("   ", exc)
+
+require('never-seen') ->
+
+ CheckpointUnavailable
+    no checkpoint for thread 'never-seen'. Threads on this store: demo. Refusing to start a new run in its place -- a resume that silently begins from zero is the failure doc 2.10 Lab 6 warns about.
+
+
+## 3.4 Gates, with three answers and not two
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+from course_organizer.runtime import APPROVAL_OUTCOMES, UNANSWERED
+
+print("outcomes  :", APPROVAL_OUTCOMES)
+print("unanswered:", repr(UNANSWERED))
+
+request = ApprovalRequest(
+    gate=DEFAULT_GATE,
+    step="publish",
+    intent="Publish the graded workspace",
+    action="publish_workspace",
+    summary="Publish 3 draft grades to the faculty-visible gradebook.",
+    artifacts={"drafts": 3},
+    principal=DEFAULT_PRINCIPAL,
+    role="coordinator",
+    run_id="notebook",
+    thread_id="demo",
+    step_index=3,
+)
+print()
+print("the question a gate is asked:")
+print("   gate    :", request.gate, "for step", request.step)
+print("   action  :", request.action)
+print("   summary :", request.summary)
+print("   to      :", request.principal, "as", request.role)
+
+outcomes  : ('approved', 'refused', 'deferred')
+unanswered: 'unanswered'
+
+the question a gate is asked:
+   gate    : publish for step publish
+   action  : publish_workspace
+   summary : Publish 3 draft grades to the faculty-visible gradebook.
+   to      : apniLeap AURA Coordinator as coordinator
+
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+scripted = ScriptedGate(
+    DEFAULT_GATE,
+    [
+        ApprovalDecision(outcome="approved", decided_by=HUMAN_AUTHORITY, reason="looks right"),
+        ApprovalDecision(outcome="deferred", decided_by=HUMAN_AUTHORITY,
+                         reason="wait for the registrar"),
+        ApprovalDecision(outcome="refused", decided_by=HUMAN_AUTHORITY,
+                         reason="the rubric needs a second look"),
+    ],
+)
+for _ in range(3):
+    decision = scripted.request(request)
+    print(f"{decision.outcome:<9} decided_by={decision.decided_by:<15} reason={decision.reason}")
+
+print()
+print("answers left:", scripted.remaining)
+print("asked:", len(scripted.asked), "time(s)")
+
+from course_organizer.runtime import GateScriptExhausted
+
+try:
+    scripted.request(request)
+except GateScriptExhausted as exc:
+    print("a fourth ask ->", type(exc).__name__)
+    print("   ", exc)
+
+approved  decided_by=course_faculty  reason=looks right
+deferred  decided_by=course_faculty  reason=wait for the registrar
+refused   decided_by=course_faculty  reason=the rubric needs a second look
+
+answers left: 0
+asked: 3 time(s)
+a fourth ask -> GateScriptExhausted
+    gate 'publish' was asked 4 time(s) but its script had no answer left. This is a test-setup error, not a runtime refusal: either the run performed more gated steps than expected, or the gate is being asked twice for the same step.
+
+
+# 4. A governed run
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+plan = lab06.build_demo_plan()
+print(f"{'step':<14}{'kind':<11}{'action':<20}{'risky':<7}gate")
+print("-" * 72)
+for step in plan:
+    print(f"{step.name:<14}{step.kind:<11}{step.action:<20}{str(step.risky):<7}{step.gate}")
+print()
+print("risky steps:", [s.name for s in plan if s.risky])
+print("plan digest:", plan_digest(plan))
+
+step          kind       action              risky  gate
+------------------------------------------------------------------------
+read_notes    connector  read_notes_store    False  
+draft_plan    skill      plan_skill          False  
+draft_grades  llm        grade_draft         False  
+publish       tool       publish_workspace   True   publish
+report        tool       render_report       False  
+
+risky steps: ['publish']
+plan digest: 943a75a134796360
+
+
+## 4.1 Run it, with a gate that approves
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+gate = PreapprovedGate(DEFAULT_GATE, by=HUMAN_AUTHORITY, reason="notebook demo approval")
+runtime, report, audit, ckpt = lab06.governed_run(
+    work,
+    thread="nb-clean",
+    run_id="nb-clean",
+    budget=Budget.defaults(),
+    gate=gate,
+)
+
+print("status :", report.status)
+print("steps  :", report.steps_run())
+print("skipped:", report.skipped)
+print()
+for answer in report.gate_answers:
+    print("gate   :", answer)
+print()
+print(f"{'dimension':<18}{'spent/limit':<16}refused")
+print("-" * 46)
+for snap in report.budget:
+    limit = "unbounded" if snap.limit is None else snap.limit
+    print(f"{snap.dimension:<18}{f'{snap.spent}/{limit}':<16}{snap.refused}")
+
+status : completed
+steps  : ('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+skipped: ()
+
+gate   : publish: approved by course_faculty -- notebook demo approval
+
+dimension         spent/limit     refused
+----------------------------------------------
+connector_calls   1/12            0
+steps             5/24            0
+records_read      16/200          0
+wall_clock_ms     5/120000        0
+skill_calls       1/8             0
+llm_calls         1/8             0
+tool_calls        2/12            0
+risky_steps       1/4             0
+
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+for outcome in report.outcomes:
+    if outcome.status != "ok":
+        continue
+    print(f"[{outcome.step}] {outcome.duration_ms:.2f} ms")
+    print("    checkpoint before:", outcome.checkpoint_before.checkpoint_id if outcome.checkpoint_before else "-")
+    print("    checkpoint after :", outcome.checkpoint_after.checkpoint_id if outcome.checkpoint_after else "-")
+
+[read_notes] 0.00 ms
+    checkpoint before: -
+    checkpoint after : 000000000001-e994f5e36557
+[draft_plan] 0.00 ms
+    checkpoint before: -
+    checkpoint after : 000000000002-5594cc4dfc6f
+[draft_grades] 0.00 ms
+    checkpoint before: -
+    checkpoint after : 000000000003-ca6f68be58fd
+[publish] 0.00 ms
+    checkpoint before: 000000000004-ca6f68be58fd
+    checkpoint after : 000000000005-7a30bdc2d8a4
+[report] 0.00 ms
+    checkpoint before: -
+    checkpoint after : 000000000006-c256d4ce711d
+
+
+## 4.2 The log, read back
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+records = audit.records()
+print(f"{len(records)} record(s); chain verifies = {audit.verify()}")
+print(f"fingerprint {audit.fingerprint()}")
+print()
+for rec in records:
+    keys = sorted(rec.inputs)
+    print(f"seq={rec.seq} {rec.step:<13}{rec.outcome:<9}risky={str(rec.risky):<6}"
+          f"decided_by={rec.decided_by or '-':<15}input keys={keys}")
+
+5 record(s); chain verifies = 5
+fingerprint b5af2b7de36e69da
+
+seq=1 read_notes   ok       risky=False decided_by=-              input keys=['prior_artifacts']
+seq=2 draft_plan   ok       risky=False decided_by=-              input keys=['prior_artifacts']
+seq=3 draft_grades ok       risky=False decided_by=-              input keys=['prior_artifacts']
+seq=4 publish      ok       risky=True  decided_by=course_faculty input keys=['approval_request', 'prior_artifacts']
+seq=5 report       ok       risky=False decided_by=-              input keys=['prior_artifacts']
+
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+ok_records = [r for r in records if r.outcome == "ok"]
+both = [r for r in ok_records if r.inputs and r.outputs]
+print(f"ok records          : {len(ok_records)}")
+print(f"with inputs+outputs : {len(both)}")
+print(f"missing either half : {len(ok_records) - len(both)}")
+print()
+print("inputs are {} for", sum(1 for r in records if not r.inputs), "record(s)")
+print("outputs are {} for", sum(1 for r in records if not r.outputs), "record(s)")
+print()
+print("a bare-message record cannot be built: inputs and outputs are required,")
+print("so 'log the message instead of the data' is not a reachable state.")
+
+ok records          : 5
+with inputs+outputs : 5
+missing either half : 0
+
+inputs are {} for 0 record(s)
+outputs are {} for 0 record(s)
+
+a bare-message record cannot be built: inputs and outputs are required,
+so 'log the message instead of the data' is not a reachable state.
+
+
+------------------------------------------------------------------------------
+In [21]:
+------------------------------------------------------------------------------
+# What a refusal looks like on the log. Cheap to produce, hard to explain in prose.
+rec = records[-1]
+print("the last record in full:")
+import json
+print(json.dumps(rec.model_dump(mode="json"), indent=2, default=str)[:1400])
+
+the last record in full:
+{
+  "seq": 5,
+  "run_id": "nb-clean",
+  "thread_id": "nb-clean",
+  "step": "report",
+  "intent": "Write the run report",
+  "action": "render_report",
+  "kind": "tool",
+  "inputs": {
+    "prior_artifacts": [
+      "draft_grades",
+      "draft_plan",
+      "publish",
+      "read_notes"
+    ]
+  },
+  "outputs": {
+    "published": 3,
+    "summary": "governed run complete"
+  },
+  "outcome": "ok",
+  "error": "",
+  "risky": false,
+  "gate": "",
+  "decided_by": "",
+  "reason": "",
+  "principal": "apniLeap AURA Coordinator",
+  "role": "",
+  "token_fingerprint": "",
+  "budget_spent": {
+    "connector_calls": 1,
+    "llm_calls": 1,
+    "records_read": 16,
+    "risky_steps": 1,
+    "skill_calls": 1,
+    "steps": 5,
+    "tool_calls": 2,
+    "wall_clock_ms": 5
+  },
+  "checkpoint_id": "",
+  "duration_ms": 0.002,
+  "at": "2026-10-01T17:41:41.068690Z",
+  "digest": "c256d4ce711d7ff9",
+  "prev_digest": "7a30bdc2d8a495a6"
+}
+
+
+## 4.3 The gate is a hard stop
+
+------------------------------------------------------------------------------
+In [22]:
+------------------------------------------------------------------------------
+gate_report, gate_audit = lab06.demo_gate_refusal(work)
+
+print("status       :", gate_report.status)
+print("steps run    :", gate_report.steps_run())
+print("publish ran  :", "publish" in gate_report.steps_run())
+print("publish output:", gate_report.outputs_of("publish"))
+print("escalated    :", gate_report.escalated, "(a refusal is not an escalation)")
+print("stopped at   :", gate_report.stopped_at)
+print()
+for answer in gate_report.gate_answers:
+    print("gate         :", answer)
+print()
+print("diagnosis    :", gate_report.diagnosis)
+
+status       : stopped
+steps run    : ('read_notes', 'draft_plan', 'draft_grades')
+publish ran  : False
+publish output: {}
+escalated    : False (a refusal is not an escalation)
+stopped at   : publish
+
+gate         : publish: refused by course_faculty -- the CS201 rubric needs a second look before grades go live
+
+diagnosis    : step 'publish' did not run: the 'publish' gate refused it, decided by course_faculty. Reason: the CS201 rubric needs a second look before grades go live. The runtime will not retry it, so the run needs a new decision, not another attempt.
+
+
+------------------------------------------------------------------------------
+In [23]:
+------------------------------------------------------------------------------
+refusal = [r for r in gate_audit.records() if r.outcome == "refused"]
+print("refusal records:", len(refusal))
+rec = refusal[0]
+print("  step       :", rec.step)
+print("  outcome    :", rec.outcome)
+print("  decided_by :", rec.decided_by)
+print("  reason     :", rec.reason)
+print("  risky      :", rec.risky)
+print("  outputs    :", rec.outputs, "(empty: the action never ran)")
+print()
+print("the approval request that was presented is itself on the record,")
+print("so a reviewer can see what was being authorised, not just that it was denied:")
+request_on_record = rec.inputs["approval_request"]
+for key in sorted(request_on_record):
+    print(f"  {key:<12}", request_on_record[key])
+print("  inputs also  :", sorted(k for k in rec.inputs if k != "approval_request"))
+
+refusal records: 1
+  step       : publish
+  outcome    : refused
+  decided_by : course_faculty
+  reason     : the CS201 rubric needs a second look before grades go live
+  risky      : True
+  outputs    : {} (empty: the action never ran)
+
+the approval request that was presented is itself on the record,
+so a reviewer can see what was being authorised, not just that it was denied:
+  gate         publish
+  step_index   3
+  summary      Publish 3 draft grades to the faculty-visible gradebook. This is irreversible without a new version.
+  inputs also  : ['prior_artifacts']
+
+
+## 4.4 The budget is a hard stop too
+
+------------------------------------------------------------------------------
+In [24]:
+------------------------------------------------------------------------------
+budget_report, budget_audit = lab06.demo_budget(work)
+
+print("status    :", budget_report.status)
+print("steps run :", budget_report.steps_run())
+print("escalated :", budget_report.escalated)
+print("stopped at:", budget_report.stopped_at)
+print()
+for snap in budget_report.budget:
+    if snap.dimension == "steps":
+        print(f"steps: spent={snap.spent} limit={snap.limit} refused={snap.refused}")
+print()
+print("the diagnosis the report carries for whoever picks this run up:")
+print(" ", budget_report.diagnosis)
+
+status    : stopped
+steps run : ('read_notes', 'draft_plan', 'draft_grades')
+escalated : True
+stopped at: publish
+
+steps: spent=3 limit=3 refused=1
+
+the diagnosis the report carries for whoever picks this run up:
+  budget refused step 'publish': the 'steps' budget is exhausted, 3 of 3 spent and this step requests 1. Nothing ran, so there is nothing to undo. Raise the ceiling deliberately or shorten the plan; do not lower MAX_ATTEMPTS to get past it.
+
+
+------------------------------------------------------------------------------
+In [25]:
+------------------------------------------------------------------------------
+# Prove the absence rather than assert it.
+print("audit records in the budgeted run:", len(budget_audit.records()))
+for rec in budget_audit.records():
+    print(f"   seq={rec.seq} {rec.step:<14}{rec.outcome}")
+print()
+print("any record for", budget_report.stopped_at, ":",
+      any(r.step == budget_report.stopped_at for r in budget_audit.records()))
+print("but the ledger remembers it:",
+      [(s.dimension, s.refused) for s in budget_report.budget if s.refused])
+print()
+print("and the report does: status=%s escalated=%s" % (
+    budget_report.status, budget_report.escalated))
+
+audit records in the budgeted run:
+
+ 3
+   seq=1 read_notes    ok
+   seq=2 draft_plan    ok
+   seq=3 draft_grades  ok
+
+any record for publish : False
+but the ledger remembers it: [('steps', 1)]
+
+and the report does: status=stopped escalated=True
+
+
+# 5. Crash and resume, in two real processes
+
+------------------------------------------------------------------------------
+In [26]:
+------------------------------------------------------------------------------
+CRASH_THREAD = "nb-crash"
+proof = lab06.crash_and_resume(work / "crash", thread=CRASH_THREAD)
+
+print("crash exit code :", proof.crash_exit_code, "(os._exit(9))")
+print("crashed         :", proof.crashed)
+print()
+print("resumed process ran    :", proof.resumed_steps)
+print("resumed process skipped:", proof.skipped)
+print()
+print("publish ran twice?     :", proof.publish_reran)
+print("gate asked again?      :", proof.gate_asked_again)
+print()
+print(f"ok records with inputs+outputs: {proof.ok_records}; missing: {proof.empty_ok_records}")
+print(f"audit chain: {proof.audit_records} record(s), verified={proof.audit_verified}, "
+      f"fingerprint {proof.fingerprint}")
+print()
+print("pass_resume:", proof.pass_resume)
+
+crash exit code : 9 (os._exit(9))
+crashed         : True
+
+resumed process ran    : ('report',)
+resumed process skipped: ('read_notes', 'draft_plan', 'draft_grades', 'publish')
+
+publish ran twice?     : False
+gate asked again?      : False
+
+ok records with inputs+outputs: 5; missing: 0
+audit chain: 5 record(s), verified=True, fingerprint 159e63569808274a
+
+pass_resume: True
+
+
+------------------------------------------------------------------------------
+In [27]:
+------------------------------------------------------------------------------
+crash_dir = Path(proof.path)
+print("what the crash left on disk:")
+for path in sorted(crash_dir.iterdir()):
+    print(f"   {path.name:<28}{path.stat().st_size:>8} bytes")
+
+what the crash left on disk:
+   _lab06_crash_child.py           1916 bytes
+   nb-crash.jsonl                  3736 bytes
+   nb-crash.sqlite                28672 bytes
+
+
+------------------------------------------------------------------------------
+In [28]:
+------------------------------------------------------------------------------
+# The child program, on disk, exactly as it ran.
+child = (crash_dir / "_lab06_crash_child.py").read_text(encoding="utf-8")
+print("\n".join(child.splitlines()[:12]))
+print("   ...")
+print(f"({len(child.splitlines())} lines total)")
+
+"""Lab 6 crash/resume child. argv: phase root thread.
+
+phase="crash"  runs the plan and dies inside the ``report`` step.
+phase="resume" adopts the checkpoint and finishes, printing KEY=VALUE lines.
+"""
+import sys
+from pathlib import Path
+
+from course_organizer.labs.lab06_governed_runtime import build_demo_plan
+from course_organizer.runtime import (
+    Budget,
+    JsonlAuditLog,
+   ...
+(56 lines total)
+
+
+## 5.1 The log spans both processes
+
+------------------------------------------------------------------------------
+In [29]:
+------------------------------------------------------------------------------
+resumed_log = JsonlAuditLog(crash_dir / f"{CRASH_THREAD}.jsonl", run_id="resume")
+print(f"{'seq':<5}{'run_id':<12}{'step':<14}{'outcome':<9}{'decided_by':<16}")
+print("-" * 60)
+for rec in resumed_log.records():
+    print(f"{rec.seq:<5}{rec.run_id:<12}{rec.step:<14}{rec.outcome:<9}"
+          f"{rec.decided_by or '-':<16}")
+print()
+print("chain verifies across the process boundary:", resumed_log.verify())
+print("fingerprint matches the proof            :",
+      resumed_log.fingerprint() == proof.fingerprint)
+
+seq  run_id      step          outcome  decided_by      
+------------------------------------------------------------
+1    crash       read_notes    ok       -               
+2    crash       draft_plan    ok       -               
+3    crash       draft_grades  ok       -               
+4    crash       publish       ok       course_faculty  
+5    resume      report        ok       -               
+
+chain verifies across the process boundary: 5
+fingerprint matches the proof            : True
+
+
+------------------------------------------------------------------------------
+In [30]:
+------------------------------------------------------------------------------
+# The approval survives in the checkpoint, which is why the gate is not re-asked.
+store2 = SqliteCheckpointStore(crash_dir / f"{CRASH_THREAD}.sqlite", run_id="resume")
+with store2.session():
+    final = store2.require(CRASH_THREAD)
+    print("thread    :", final.thread_id)
+    print("completed :", final.completed)
+    print("approvals :", final.approvals)
+    print("spent     :", final.spent)
+    print("audit_seq :", final.audit_seq)
+    print("checkpoints on disk:", store2.count(CRASH_THREAD))
+
+thread    : nb-crash
+completed : ('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+approvals : {'publish': 'approved'}
+spent     : {'connector_calls': 1, 'steps': 5, 'records_read': 16, 'wall_clock_ms': 5, 'skill_calls': 1, 'llm_calls': 1, 'tool_calls': 2, 'risky_steps': 1}
+audit_seq : 6
+checkpoints on disk: 7
+
+
+# 6. The whole lab, self-checking
+
+------------------------------------------------------------------------------
+In [31]:
+------------------------------------------------------------------------------
+result = lab06.run_lab06(work / "full")
+
+print(f"{result.lab}: {lab06.DOC_GOAL}")
+print(f"evidence in  : {result.root}")
+print(f"pass_all     : {result.pass_all}")
+print()
+for check in result.checks:
+    print(f"[{'PASS' if check['passed'] else 'FAIL'}] {check['name']}")
+    print(f"       {check['detail']}")
+print()
+print("=" * 72)
+print(f"OVERALL: {'PASS' if result.pass_all else 'FAIL'} "
+      f"({sum(1 for c in result.checks if c['passed'])}/{len(result.checks)} checks)")
+
+Lab 6: Run the agent inside a controlled runtime with a full audit log.
+evidence in  : C:\Users\ummea\AppData\Local\Temp\lab06_nb_43j_6qkm\full\run-6652486a
+pass_all     : True
+
+[PASS] clean_run_completes_every_step
+       status=completed, ran=('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+[PASS] the_publish_step_is_the_gated_one
+       gate answers: ('publish: approved by course_faculty -- demo approval',)
+[PASS] every_action_logged_with_inputs_and_outputs
+       5/5 ok record(s) carry both; 5 step(s) expected
+[PASS] every_record_carries_the_document_triple
+       audit.log(step.intent, step.action, step.result): intent and action present on 5/5 record(s)
+[PASS] the_log_is_not_merely_messages
+       no record is a bare message; inputs and outputs are required fields
+[PASS] crash_really_killed_the_process
+       child exit code 9 (os._exit(9) expected)
+[PASS] resume_runs_only_the_unfinished_step
+       resumed ran ('report',); skipped ('read_notes', 'draft_plan', 'draft_grades', 'publish')
+[PASS] resume_does_not_repeat_the_risky_publish
+       publish executed in the resumed process: False
+[PASS] resume_does_not_re_ask_the_gate
+       gate consulted again on resume: False
+[PASS] audit_chain_survives_the_crash
+       5 record(s) across both processes, chain verified=True, fingerprint f907137e63bdcf01
+[PASS] budget_is_enforced_before_the_action
+       status=stopped, steps spent=3/3, refusals=1, escalated=True
+[PASS] budget_refusal_stops_before_the_over_limit_step
+       budgeted run executed ('read_notes', 'draft_plan', 'draft_grades')
+[PASS] gate_is_a_hard_stop
+       status=stopped, ran=('read_notes', 'draft_plan', 'draft_grades'), publish outputs={}
+[PASS] refusal_is_logged_with_who_and_what
+       record outcome=refused, decided_by=course_faculty, inputs recorded=True
+[PASS] checkpoint_written_before_the_risky_step
+       1 gated record(s), each naming the pre-step checkpoint: ['000000000004-9bb5f19626ff']; 6 checkpoint(s) written by the run
+[PASS] audit_chain_verifies
+       fingerprint 2c667ed9ae287bea over 5 record(s)
+
+========================================================================
+OVERALL: PASS (16/16 checks)
+
+
+------------------------------------------------------------------------------
+In [32]:
+------------------------------------------------------------------------------
+print("clean run  :", result.clean.status, result.clean.steps_run())
+print("gate run   :", result.gate.status, result.gate.steps_run())
+print("budget run :", result.budget.status, result.budget.steps_run())
+print("crash proof:", result.proof.rendered())
+print()
+print("notes:")
+for note in result.notes:
+    print("  ", note)
+
+clean run  : completed ('read_notes', 'draft_plan', 'draft_grades', 'publish', 'report')
+gate run   : stopped ('read_notes', 'draft_plan', 'draft_grades')
+budget run : stopped ('read_notes', 'draft_plan', 'draft_grades')
+crash proof: crash exit=9 (expected 9)
+  resumed ran    : ('report',)
+  resumed skipped: ('read_notes', 'draft_plan', 'draft_grades', 'publish')
+  publish reran  : False; gate asked again: False
+  ok records with inputs+outputs: 5; missing: 0
+  audit chain    : 5 record(s), verified=True, fingerprint f907137e63bdcf01
+
+notes:
+   clean run fingerprint 2c667ed9ae287bea over 5 record(s)
+   crash/resume fingerprint f907137e63bdcf01 over 5 record(s)
+   acceptance: 16/16 checks passed
+
+
+------------------------------------------------------------------------------
+In [33]:
+------------------------------------------------------------------------------
+import json
+
+blob = result.as_dict()
+print(json.dumps({k: v for k, v in blob.items() if k != "checks"}, indent=2))
+
+{
+  "lab": "Lab 6",
+  "pass_all": true,
+  "root": "C:\\Users\\ummea\\AppData\\Local\\Temp\\lab06_nb_43j_6qkm\\full\\run-6652486a",
+  "clean_status": "completed",
+  "clean_steps": [
+    "read_notes",
+    "draft_plan",
+    "draft_grades",
+    "publish",
+    "report"
+  ],
+  "gate_status": "stopped",
+  "budget_status": "stopped",
+  "proof": {
+    "crashed": true,
+    "resumed_steps": [
+      "report"
+    ],
+    "skipped": [
+      "read_notes",
+      "draft_plan",
+      "draft_grades",
+      "publish"
+    ],
+    "publish_reran": false,
+    "audit_records": 5,
+    "audit_verified": true
+  },
+  "notes": [
+    "clean run fingerprint 2c667ed9ae287bea over 5 record(s)",
+    "crash/resume fingerprint f907137e63bdcf01 over 5 record(s)",
+    "acceptance: 16/16 checks passed"
+  ]
+}
+
+
+## 6.1 Idempotence
+
+------------------------------------------------------------------------------
+In [34]:
+------------------------------------------------------------------------------
+again = lab06.run_lab06(work / "full")
+print("second run into the same directory:")
+print("  pass_all    :", again.pass_all)
+print("  clean status:", again.clean.status)
+print("  proof       :", again.proof.crashed, again.proof.resumed_steps)
+print()
+print("first  run evidence:", result.root)
+print("second run evidence:", again.root)
+print("different directories:", result.root != again.root)
+print()
+print("the two runs agree on every check:",
+      [c["name"] for c in result.checks if c["passed"]]
+      == [c["name"] for c in again.checks if c["passed"]])
+
+second run into the same directory:
+  pass_all    : True
+  clean status: completed
+  proof       : True ('report',)
+
+first  run evidence: C:\Users\ummea\AppData\Local\Temp\lab06_nb_43j_6qkm\full\run-6652486a
+second run evidence: C:\Users\ummea\AppData\Local\Temp\lab06_nb_43j_6qkm\full\run-786cbfa4
+different directories: True
+
+the two runs agree on every check: True
+
+
+------------------------------------------------------------------------------
+In [35]:
+------------------------------------------------------------------------------
+# And the runtime-level guard, independent of run_lab06's directories.
+from course_organizer.runtime import RuntimeBoundaryError
+
+guard_dir = work / "guard"
+lab06.governed_run(
+    guard_dir, thread="t", run_id="first",
+    budget=Budget.defaults(), gate=PreapprovedGate(DEFAULT_GATE, by=HUMAN_AUTHORITY),
+)
+try:
+    lab06.governed_run(
+        guard_dir, thread="t", run_id="second",
+        budget=Budget.defaults(), gate=PreapprovedGate(DEFAULT_GATE, by=HUMAN_AUTHORITY),
+    )
+except RuntimeBoundaryError as exc:
+    print("a fresh run on an occupied resume key is refused:")
+    print("  ", exc)
+
+a fresh run on an occupied resume key is refused:
+   thread 't' already holds a checkpoint under C:\Users\ummea\AppData\Local\Temp\lab06_nb_43j_6qkm\guard\t.sqlite. Pass resume=True to continue that run, or a different thread to start a new one. A fresh run cannot share a resume key with an existing one.
+
+
+# 7. Requirement coverage
+## Out of scope for this lab, deliberately
+
+# 8. Reproducing this
+# one command, prints the full report, exits 0 on pass
+# the lab module's own tests, including the two-process crash proof
+# this notebook, executed
+## What this notebook does not prove
+
+------------------------------------------------------------------------------
+In [36]:
+------------------------------------------------------------------------------
+# The whole lab again, from inside the notebook, and the exit code it implies.
+import os
+import subprocess
+
+proc = subprocess.run(
+    [sys.executable, "-m", "course_organizer.labs.lab06_governed_runtime",
+     str(work / "final")],
+    capture_output=True,
+    text=True,
+    timeout=300,
+    env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+)
+print(proc.stdout.strip().splitlines()[-1])
+print("exit code:", proc.returncode)
+assert proc.returncode == 0, proc.stdout + proc.stderr
+print()
+print("closing checks")
+print("  acceptance       :", f"{sum(1 for c in result.checks if c['passed'])}/{len(result.checks)}")
+print("  crash proof      :", "pass" if result.proof.pass_resume else "FAIL")
+print("  publish repeated :", result.proof.publish_reran)
+print("  gate re-asked    :", result.proof.gate_asked_again)
+print("  audit chain      :", f"{result.proof.audit_records} record(s), "
+      f"verified={result.proof.audit_verified}")
+
+OVERALL: PASS (16/16 checks)
+exit code: 0
+
+closing checks
+  acceptance       : 16/16
+  crash proof      : pass
+  publish repeated : False
+  gate re-asked    : False
+  audit chain      : 5 record(s), verified=True
+
+
+==============================================================================
+end of notebook - 64 cells, 0 errors
+==============================================================================

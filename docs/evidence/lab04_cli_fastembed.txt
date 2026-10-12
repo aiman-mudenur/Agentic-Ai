@@ -1,0 +1,240 @@
+﻿21:07:52 WARNING [lab04-fe] __main__ | ContaminatedArchive has had its boundary checks removed. It will now accept records that MemoryStore.append would refuse. This is Lab 4's deliberate demonstration and nothing else.
+
+==============================================================================
+2.10 Lab 4 - Memory & Retrieval: state vs stored
+==============================================================================
+  run id       : lab04-fe
+  embedder     : fastembed:BAAI/bge-small-en-v1.5
+  triage       : 0.9663  (routing only)
+  elapsed      : 3856.2ms
+
+  doc goal   : Separate short-term run state from long-term stored knowledge.
+  doc accept : For a given task, retrieval returns correctly-tagged candidates and similar prior items.
+  doc pitfall: Don't conflate run state with the archive - mixing them corrupts the baseline.
+  doc nodes  : Retrieval node; seeds validation/no-repeat.
+
+  pseudocode:
+    state.draft = candidate                      # short-term
+    hits  = retrieve(store, tags)                # long-term
+    prior = retrieve(history, embed(candidate), k=5)  # similarity
+
+==============================================================================
+1. The two memories, held apart
+==============================================================================
+
+  RUN_STATE (short-term)            ARCHIVE (long-term)
+  ----------------------------      --------------------------------
+  state.draft = candidate   -->     hits  = retrieve(store, tags)
+  state.draft = candidate   -->     prior = retrieve(history, ...)
+  no method to write anywhere        append() refuses RUN_STATE records
+  provenance: run_state:draft
+  provenance: only files the store actually read
+
+==============================================================================
+2. Retrieval, case by case
+==============================================================================
+
+case new-answer  [CS201]  run lab04-fe/CS201
+  candidate    : draft-e0687ad5 (new, run_state, 684 chars)
+  hits         : 1 of 18 scanned, tags=['linked-list', 'unit:1'] match=all correct=True
+  prior        : 5 of 8 compared, k=5 embedder=fastembed:BAAI/bge-small-en-v1.5 thr=0.9663
+  flag         : within_threshold: candidate draft-e0687ad5 vs DS-A1-S001 score=0.8821 threshold=0.9663 review=False by=similarity_retriever
+  seeds        : no-repeat seed: draft-e0687ad5 vs DS-A1-S001 at 0.8821 over 8 prior item(s); flagged=False
+                 similarity check seed: score 0.8821 attached to draft-e0687ad5 from fastembed:BAAI/bge-small-en-v1.5 over 5 record(s); determination deferred to plagiarism_similarity_node, authority course_faculty
+  archive      : 9ea328fcba23de18 -> 9ea328fcba23de18 unchanged=True draft_in_archive=False
+  retrievals   : 2 call(s) over ['archive']
+  elapsed      : 1237.38ms
+
+    tag hits (retrieve(store, tags)):
+       1. ds-u1-linked-lists@v2      score=1.00  carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+    similar prior (retrieve(history, embed(candidate), k=5)):
+       1. DS-A1-S001                 cos=0.8821  submission
+       2. DS-A1-S003                 cos=0.8793  submission
+       3. DS-A1-S002                 cos=0.8259  submission
+       4. DS-A1-S004                 cos=0.7767  submission
+       5. DS-A2-S005                 cos=0.7764  submission
+
+case verbatim-copy  [CS201]  run lab04-fe/CS201
+  candidate    : draft-d024d05d (verbatim, run_state, 723 chars)
+  hits         : 1 of 18 scanned, tags=['linked-list', 'unit:1'] match=all correct=True
+  prior        : 5 of 8 compared, k=5 embedder=fastembed:BAAI/bge-small-en-v1.5 thr=0.9663
+  flag         : review_required: candidate draft-d024d05d vs DS-A1-S001 score=0.9881 threshold=0.9663 review=True by=similarity_retriever
+  seeds        : no-repeat seed: draft-d024d05d vs DS-A1-S001 at 0.9881 over 8 prior item(s); flagged=True
+                 similarity check seed: score 0.9881 attached to draft-d024d05d from fastembed:BAAI/bge-small-en-v1.5 over 5 record(s); determination deferred to plagiarism_similarity_node, authority course_faculty
+  archive      : 9ea328fcba23de18 -> 9ea328fcba23de18 unchanged=True draft_in_archive=False
+  retrievals   : 4 call(s) over ['archive']
+  elapsed      : 355.30ms
+
+    tag hits (retrieve(store, tags)):
+       1. ds-u1-linked-lists@v2      score=1.00  carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+    similar prior (retrieve(history, embed(candidate), k=5)):
+       1. DS-A1-S001                 cos=0.9881  submission
+       2. DS-A1-S003                 cos=0.9780  submission
+       3. DS-A1-S002                 cos=0.8743  submission
+       4. DS-A1-S004                 cos=0.8002  submission
+       5. DS-A2-S005                 cos=0.7775  submission
+
+case restatement  [CS201]  run lab04-fe/CS201
+  candidate    : draft-b9f723f9 (restated, run_state, 792 chars)
+  hits         : 1 of 18 scanned, tags=['linked-list', 'unit:1'] match=all correct=True
+  prior        : 5 of 8 compared, k=5 embedder=fastembed:BAAI/bge-small-en-v1.5 thr=0.9663
+  flag         : within_threshold: candidate draft-b9f723f9 vs DS-A1-S003 score=0.7916 threshold=0.9663 review=False by=similarity_retriever
+  seeds        : no-repeat seed: draft-b9f723f9 vs DS-A1-S003 at 0.7916 over 8 prior item(s); flagged=False
+                 similarity check seed: score 0.7916 attached to draft-b9f723f9 from fastembed:BAAI/bge-small-en-v1.5 over 5 record(s); determination deferred to plagiarism_similarity_node, authority course_faculty
+  archive      : 9ea328fcba23de18 -> 9ea328fcba23de18 unchanged=True draft_in_archive=False
+  retrievals   : 6 call(s) over ['archive']
+  elapsed      : 343.55ms
+
+    tag hits (retrieve(store, tags)):
+       1. ds-u1-linked-lists@v2      score=1.00  carries 2/2 requested tag(s): ['linked-list', 'unit:1']
+    similar prior (retrieve(history, embed(candidate), k=5)):
+       1. DS-A1-S003                 cos=0.7916  submission
+       2. DS-A1-S001                 cos=0.7845  submission
+       3. DS-A2-S005                 cos=0.7515  submission
+       4. DS-A1-S002                 cos=0.7367  submission
+       5. DS-A2-S006                 cos=0.7050  submission
+
+case other-subject  [DBMS402]  run lab04-fe/DBMS402
+  candidate    : draft-59ee0469 (new, run_state, 862 chars)
+  hits         : 1 of 13 scanned, tags=['normalisation', 'unit:2'] match=all correct=True
+  prior        : 5 of 6 compared, k=5 embedder=fastembed:BAAI/bge-small-en-v1.5 thr=0.9663
+  flag         : within_threshold: candidate draft-59ee0469 vs DB-A2-S003 score=0.9445 threshold=0.9663 review=False by=similarity_retriever
+  seeds        : no-repeat seed: draft-59ee0469 vs DB-A2-S003 at 0.9445 over 6 prior item(s); flagged=False
+                 similarity check seed: score 0.9445 attached to draft-59ee0469 from fastembed:BAAI/bge-small-en-v1.5 over 5 record(s); determination deferred to plagiarism_similarity_node, authority course_faculty
+  archive      : 83c6b277460c5494 -> 83c6b277460c5494 unchanged=True draft_in_archive=False
+  retrievals   : 2 call(s) over ['archive']
+  elapsed      : 233.66ms
+
+    tag hits (retrieve(store, tags)):
+       1. dbms-u2-normalisation@v1   score=1.00  carries 2/2 requested tag(s): ['normalisation', 'unit:2']
+    similar prior (retrieve(history, embed(candidate), k=5)):
+       1. DB-A2-S003                 cos=0.9445  submission
+       2. DB-A2-S004                 cos=0.8833  submission
+       3. DB-A1-S002                 cos=0.7317  submission
+       4. DB-A3-S006                 cos=0.7127  submission
+       5. DB-A1-S001                 cos=0.6883  submission
+
+==============================================================================
+3. Where the triage threshold came from
+==============================================================================
+
+embedding backend: fastembed:BAAI/bge-small-en-v1.5
+triage threshold : 0.9663  (routing only; doc 2.4 node 4, 2.12)
+
+every row below is one of this lab's own cases, measured against the
+archive that case names -- so this table and the acceptance checks
+cannot disagree about what was measured.
+
+case            course        top     2nd     gap  flagged? want  matches     
+------------------------------------------------------------------------------
+verbatim-copy   CS201      0.9881  0.9780  0.0101  yes      yes   DS-A1-S001  
+other-subject   DBMS402    0.9445  0.8833  0.0612  no       no    DB-A2-S003  
+new-answer      CS201      0.8821  0.8793  0.0028  no       no    DS-A1-S001  
+restatement     CS201      0.7916  0.7845  0.0071  no       no    DS-A1-S003  
+------------------------------------------------------------------------------
+4 of 4 cases classified as expected. A 'WRONG' row means the threshold is miscalibrated for this backend.
+headroom above : +0.0218  (tightest must-flag case verbatim-copy)
+headroom below : +0.0218  (closest must-not-flag case other-subject)
+verdict        : 0.0218 of headroom on 'other-subject' - comfortable for triage, and still not a determination.
+
+==============================================================================
+4. The pitfall, run on purpose
+==============================================================================
+
+violation: CS201: draft written into the archive
+  doc      : Don't conflate run state with the archive - mixing them corrupts the baseline.
+  attempted: archive.append(draft-5e107a60) -- a run_state record with provenance 'run_state:draft'
+  REFUSED  : layer check=True provenance check=True
+             cannot store a run_state record in a store holding archive records. short-term run state (the current draft) and long-term stored knowledge (notes store + submission history) are separate memories: short-term run state (the current draft) must not reach long-term stored knowledge (notes store + submission history).
+  [after relabelling the layer] record 'draft-5e107a60' claims provenance 'run_state:draft', which is not a source this archive store reads from. Allowed: ['data/seed/data_structures/assignments.json', 'data/seed/data_structures/notes.json', 'data/seed/data_structures/submissions.json']
+  baseline : 9ea328fcba23de18 -> b6721b3a71bcd1c2 corrupted=True
+  self-hit : DS-A1-S001 at 0.9881 (the draft found itself)
+  damage   : with the draft in the archive, the no-repeat check reports DS-A1-S001 at 0.9881 -- the run's own text -- and routes it to review_required. Every future run inherits that baseline, so the system would flag itself on every submission until the archive was rebuilt from source.
+
+==============================================================================
+5. What the flag is not
+==============================================================================
+
+  new-answer       within_threshold: candidate draft-e0687ad5 vs DS-A1-S001 score=0.8821 threshold=0.9663 review=False by=similarity_retriever
+  verbatim-copy    review_required: candidate draft-d024d05d vs DS-A1-S001 score=0.9881 threshold=0.9663 review=True by=similarity_retriever
+  restatement      within_threshold: candidate draft-b9f723f9 vs DS-A1-S003 score=0.7916 threshold=0.9663 review=False by=similarity_retriever
+  other-subject    within_threshold: candidate draft-59ee0469 vs DB-A2-S003 score=0.9445 threshold=0.9663 review=False by=similarity_retriever
+
+  SimilarityFlag fields: authority, candidate_id, candidate_layer, compared_against, decided_by, disposition, exceeds_threshold, rationale, requires_human_review, reviewed_by, score_source, threshold, top_match_id, top_score
+
+  none of 19 forbidden field names appear on the type: confirmed absent
+  doc 2.4 node 4 : Flag for human review; never make a final plagiarism
+                   determination automatically.
+  doc 2.12       : Flag high-similarity submissions for review only; never
+                   auto-penalize.
+  authority      : course_faculty (a constant, not a parameter)
+
+==============================================================================
+6. Ledgers
+==============================================================================
+
+  tool calls (Lab 2 layer, unchanged except the third read):
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     1.25  ok
+  2  read_submission_records         0     1.24  ok
+-------------------------------------------------------
+  2  TOTAL                                 2.49  0 failed
+
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     1.49  ok
+  2  read_submission_records         0     2.13  ok
+-------------------------------------------------------
+  2  TOTAL                                 3.62  0 failed
+
+  retrievals (this lab):
+  #  retriever                 layer        hits  corpus       ms  status
+-------------------------------------------------------------------------
+  1  retrieve_by_tags          archive         1      18     0.29  ok
+  2  retrieve_similar_prior    archive         5      18  1232.19  ok
+  3  retrieve_by_tags          archive         1      18     0.11  ok
+  4  retrieve_similar_prior    archive         5      18   353.79  ok
+  5  retrieve_by_tags          archive         1      18     0.10  ok
+  6  retrieve_similar_prior    archive         5      18   339.76  ok
+-------------------------------------------------------------------------
+  6  TOTAL                                                1926.24  0 failed
+
+  #  retriever                 layer        hits  corpus       ms  status
+-------------------------------------------------------------------------
+  1  retrieve_by_tags          archive         1      13     0.09  ok
+  2  retrieve_similar_prior    archive         5      13   232.54  ok
+-------------------------------------------------------------------------
+  2  TOTAL                                                 232.63  0 failed
+
+==============================================================================
+7. Acceptance
+==============================================================================
+
+  [PASS] new-answer: every candidate carries the requested tags         1 hit(s) of 18 scanned
+  [PASS] new-answer: similar prior items returned                       top DS-A1-S001 at 0.8821
+  [PASS] new-answer: routed to within_threshold                         within_threshold
+  [PASS] verbatim-copy: every candidate carries the requested tags      1 hit(s) of 18 scanned
+  [PASS] verbatim-copy: similar prior items returned                    top DS-A1-S001 at 0.9881
+  [PASS] verbatim-copy: routed to review_required                       review_required
+  [PASS] restatement: every candidate carries the requested tags        1 hit(s) of 18 scanned
+  [PASS] restatement: similar prior items returned                      top DS-A1-S003 at 0.7916
+  [PASS] restatement: routed to within_threshold                        within_threshold
+  [PASS] other-subject: every candidate carries the requested tags      1 hit(s) of 13 scanned
+  [PASS] other-subject: similar prior items returned                    top DB-A2-S003 at 0.9445
+  [PASS] other-subject: routed to within_threshold                      within_threshold
+  [PASS] no case changed the archive's content fingerprint              4 case(s)
+  [PASS] no run-state draft is in any archive                           the short-term half stayed short-term
+  [PASS] no retrieval read the run state                                archive
+  [PASS] no archive contains a foreign-layer record                     baseline 9ea328fcba23de18 -> b6721b3a71bcd1c2
+  [PASS] the similarity flag has no verdict or penalty field            none present
+  [PASS] no bundle produced a plagiarism determination                  2.4 node 4: flag for human review, never determine
+  [PASS] every flagged case names the human authority                   course_faculty
+  [PASS] nothing has been reviewed yet, and the record says so          reviewed_by is empty on every flag
+  [PASS] writing a draft into the archive is refused                    layer=True provenance=True
+  [PASS] the relabelled attempt is refused by provenance too            two independent checks, not one check twice
+  [PASS] the contamination demonstrably changes the baseline            9ea328fcba23de18 -> b6721b3a71bcd1c2
+  [PASS] the triage threshold separates the planted copy from the rest  4 of 4 case(s), tightest margin +0.0218 on other-subject
+  [PASS] every similarity hit came from the submission history only     11 distinct prior item(s) across 4 case(s)
+
+OVERALL: PASS  (25 checks, 4 cases, 3856.2ms)

@@ -1,0 +1,34 @@
+# Secrets — never commit
+.env
+credentials.json
+token.json
+secrets.json
+
+# Lab 5 Google OAuth artifacts
+*.token.json
+oauth_creds.json
+
+# Runtime output (doc 2.10 Lab 6: audit log, checkpoints, published versions)
+data/workspace/
+
+# Lab 4 embedding model cache (~67 MB, re-downloaded on demand)
+.fastembed_cache/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

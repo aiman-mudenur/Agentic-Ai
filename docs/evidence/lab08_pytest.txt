@@ -1,0 +1,11 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+configfile: pyproject.toml
+plugins: anyio-4.15.1, langsmith-0.14.1, platformdirs-4.12.2
+collected 104 items
+
+tests\test_lab08_swarm.py .............................................. [ 44%]
+..........................................................               [100%]
+
+============================= 104 passed in 3.72s =============================

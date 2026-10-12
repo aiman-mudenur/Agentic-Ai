@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "course-organizer"
+version = "0.1.0"
+description = "Worklet 2 - Course Project, Notes & Assignment Organizer (agentic AI, Labs 1-8)"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "live: needs a real GOOGLE_API_KEY and network access (skipped by default)",
+    "google: needs Google Cloud OAuth setup (skipped by default)",
+]

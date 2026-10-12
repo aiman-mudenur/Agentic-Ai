@@ -1,0 +1,1092 @@
+Evidence - lab02_tool_using_agent.ipynb
+============================
+
+Notebook : notebooks/lab02_tool_using_agent.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 41 cells, 20 code, 20 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 2 - Tool-Using Agent
+## What this notebook proves
+
+## 1. Setup
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+import ast
+import json
+from pathlib import Path
+
+from course_organizer.config import PROJECT_ROOT
+from course_organizer.labs import lab02_tool_using_agent as lab02
+from course_organizer.llm import get_llm
+from course_organizer.logging_setup import setup_logging
+from course_organizer.tools.base import ToolError, ToolRegistry
+from course_organizer.tools.compute import build_default_registry
+from course_organizer.tools.seed_store import get_seed_store
+
+setup_logging()
+
+print("PROJECT_ROOT :", PROJECT_ROOT)
+print("LLM backend  :", get_llm().name)
+print("seed corpus  :", get_seed_store().seed_dir)
+print("courses      :", get_seed_store().course_codes())
+
+PROJECT_ROOT : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+LLM backend  : scripted
+seed corpus  : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\data\seed
+courses      : ['CS201', 'DBMS402']
+
+
+## 2. Structural proof: the agent cannot reach the store
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+FORBIDDEN = {
+    "open", "Path", "pathlib.Path", "read_text", "read_bytes",
+    "os.listdir", "os.scandir", "os.walk", "os.environ",
+    "json.load", "json.loads", "glob", "rglob",
+    "LocalSeedStore", "get_seed_store",
+}
+
+source_file = Path(lab02.__file__)
+tree = ast.parse(source_file.read_text(encoding="utf-8-sig"))
+
+referenced = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name):
+            referenced.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            referenced.add(node.func.attr)
+    elif isinstance(node, ast.Attribute):
+        referenced.add(node.attr)
+    elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        for alias in node.names:
+            referenced.add(alias.name.split(".")[-1])
+
+offenders = sorted(referenced & FORBIDDEN)
+print(f"agent module : {source_file.name}")
+print(f"lines        : {len(source_file.read_text(encoding='utf-8-sig').splitlines())}")
+print(f"forbidden references found: {offenders if offenders else 'NONE'}")
+print()
+print("The agent imports:")
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        print("   ", ast.unparse(node))
+
+agent module : lab02_tool_using_agent.py
+lines        : 1575
+forbidden references found: NONE
+
+The agent imports:
+    from __future__ import annotations
+    import json
+    import logging
+    import re
+    import uuid
+    from dataclasses import dataclass, field
+    from enum import Enum
+    from typing import Any, Optional, Sequence
+    from pydantic import Field
+    from course_organizer import HUMAN_AUTHORITY
+    from course_organizer.llm import LLMClient, LLMError, ScriptedLLM, get_llm
+    from course_organizer.logging_setup import log_event
+    from course_organizer.schemas import _Base
+    from course_organizer.tools.base import ToolError, ToolRegistry
+    from course_organizer.tools.compute import ScopeQuery, ScopeValidationResult, build_default_registry
+    from course_organizer.logging_setup import setup_logging
+
+
+### 2a. The data the tools read
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+store = get_seed_store()
+for code in store.course_codes():
+    header, notes = store.read_notes(code)
+    definitions = store.read_assignments(code)
+    print("=" * 74)
+    print(f"{code} - {header['course_name']}  ({header['term']})")
+    print(f"  units declared : {[u['unit'] for u in header['units']]}")
+    print(f"  notes          : {len(notes)}  ({sum(len(n.versions) for n in notes)} versions)")
+    print(f"  assignments    : {len(definitions)}")
+    for a in definitions:
+        print(f"    {a.assignment_id}  {a.max_marks:5.1f} marks  "
+              f"criterion sum {a.rubric_total:5.1f}  weight {a.weight_total:.2f}  "
+              f"due {a.due_date:%Y-%m-%d}  approved_by={a.approved_by}")
+    print()
+print("seed files, as the audit trail records them:")
+for row in store.describe_sources():
+    print(f"    {row['bytes']:>7} bytes  {row['path']}")
+
+==========================================================================
+CS201 - Data Structures  (2026 - Semester I)
+  units declared : ['1', '2', '3', '4', '5']
+  notes          : 8  (10 versions)
+  assignments    : 3
+    ASG-01   20.0 marks  criterion sum  20.0  weight 1.00  due 2026-10-20  approved_by=course_faculty
+    ASG-02   20.0 marks  criterion sum  20.0  weight 1.00  due 2026-11-03  approved_by=course_faculty
+    ASG-03   25.0 marks  criterion sum  25.0  weight 1.00  due 2026-11-17  approved_by=course_faculty
+
+==========================================================================
+DBMS402 - Database Management Systems  (2026 - Semester I)
+  units declared : ['1', '2', '3', '4', '5']
+  notes          : 6  (7 versions)
+  assignments    : 3
+    ASG-01   15.0 marks  criterion sum  15.0  weight 1.00  due 2026-10-22  approved_by=course_faculty
+    ASG-02   20.0 marks  criterion sum  20.0  weight 1.00  due 2026-11-05  approved_by=course_faculty
+    ASG-03   20.0 marks  criterion sum  20.0  weight 1.00  due 2026-11-19  approved_by=course_faculty
+
+seed files, as the audit trail records them:
+       3782 bytes  data/seed/data_structures/assignments.json
+      18980 bytes  data/seed/data_structures/notes.json
+       3746 bytes  data/seed/dbms/assignments.json
+      15042 bytes  data/seed/dbms/notes.json
+
+
+## 3. The typed tool layer
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+registry = build_default_registry(run_id="notebook-lab02")
+print(registry.describe_all())
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+compute_scope_validation(course_code: <class 'str'>, units: list[str], assignment_ids: list[str]) -> ScopeValidationResult
+    Compute and validate the clarified scope against real data. Reads the notes store and the assignment/rubric definitions, then checks unit coverage, version integrity, rubric arithmetic, the release and due date ordering, and faculty approval. Call this before acting on any scope: it is the gate that stops the planner from working from assumptions.
+    doc: 2.10 Lab 2 pseudocode v = tool.compute(a, b); assert v.valid | read_only=True
+read_assignment_rubrics(course_code: <class 'str'>, assignment_ids: list[str]) -> AssignmentReadResult
+    Read 'assignment & rubric definitions' for one course: briefs, due dates, maximum marks and per-criterion rubrics. Call this instead of recalling any mark value, due date or rubric total from memory.
+    doc: 2.10 Lab 2 pseudocode b = tool.read('assignment & rubric definitions') | read_only=True
+read_notes_store(course_code: <class 'str'>, units: list[str], topic: str | None, current_only: <class 'bool'>) -> NotesReadResult
+    Read 'the notes/materials store' for one course. Use this to look up lecture notes, slides and reference material, their units and their version history. Call this instead of recalling any note text or unit count from memory.
+    doc: 2.10 Lab 2 pseudocode a = tool.read('the notes/materials store') | read_only=True
+
+
+### 3a. `a = tool.read('the notes/materials store')`
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+a = registry.invoke("read_notes_store", {"course_code": "CS201"}).unwrap()
+print(f"course            : {a.course_name}")
+print(f"units declared    : {a.units_declared}")
+print(f"units covered     : {a.units_covered}")
+print(f"units missing     : {a.units_missing or '(none)'}")
+print(f"note_count        : {a.note_count}")
+print(f"version_total     : {a.version_total}")
+print(f"unit_coverage()   : {a.unit_coverage()}")
+print(f"tags              : {a.tags}")
+print(f"source_files      : {a.source_files}")
+print()
+print("notes, with their version history preserved (doc 2.12):")
+for note in a.notes:
+    versions = ", ".join(f"v{v.version}" for v in note.versions)
+    print(f"    {note.note_id:<24} unit {note.unit}  [{versions}]  "
+          f"{len(note.current_version.content):>5} chars current  tags={note.tags}")
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+course            : Data Structures
+units declared    : ['1', '2', '3', '4', '5']
+units covered     : ['1', '2', '3', '4', '5']
+units missing     : (none)
+note_count        : 8
+version_total     : 10
+unit_coverage()   : 1.0
+tags              : ['adjacency-list', 'adjacency-matrix', 'applications', 'arrays', 'bfs', 'bst', 'cache', 'chaining', 'collisions', 'contiguous', 'deletion', 'deque', 'dfs', 'dijkstra', 'graphs', 'hashing', 'in-order', 'insertion', 'level-order', 'linked-list', 'load-factor', 'memory', 'open-addressing', 'pointers', 'queue', 'recursion', 'representation', 'resizing', 'search', 'shortest-path', 'stack', 'traversal', 'trees', 'weighted']
+source_files      : ['data/seed/data_structures/notes.json']
+
+notes, with their version history preserved (doc 2.12):
+    ds-u1-linked-lists       unit 1  [v1, v2]   2242 chars current  tags=['linked-list', 'pointers', 'memory', 'traversal']
+    ds-u1-arrays             unit 1  [v1]    941 chars current  tags=['arrays', 'contiguous', 'resizing', 'cache']
+    ds-u2-stacks-queues      unit 2  [v1]   1248 chars current  tags=['stack', 'queue', 'deque', 'applications', 'traversal']
+    ds-u3-bst                unit 3  [v1, v2]   1822 chars current  tags=['bst', 'trees', 'search', 'insertion', 'deletion']
+    ds-u3-traversal          unit 3  [v1]   1072 chars current  tags=['traversal', 'recursion', 'in-order', 'level-order']
+    ds-u4-hashing            unit 4  [v1]   1395 chars current  tags=['hashing', 'collisions', 'chaining', 'open-addressing', 'load-factor']
+    ds-u5-graphs             unit 5  [v1]    926 chars current  tags=['graphs', 'adjacency-matrix', 'adjacency-list', 'representation']
+    ds-u5-shortest-paths     unit 5  [v1]   1373 chars current  tags=['bfs', 'dfs', 'dijkstra', 'shortest-path', 'weighted']
+
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+print("one note's full history:")
+note = next(n for n in a.notes if len(n.versions) > 1)
+print(f"  {note.note_id} - {note.title}")
+for v in note.versions:
+    print(f"    v{v.version}  {v.created_at:%Y-%m-%d}  by {v.author}")
+    print(f"         changelog: {v.changelog}")
+    print(f"         sha256   : {v.content_sha256[:16]}...")
+    print(f"         current  : {v is note.current_version}")
+print()
+print("narrowing to units 1 and 3:")
+narrow = registry.invoke(
+    "read_notes_store", {"course_code": "CS201", "units": ["1", "3"]}
+).unwrap()
+print(f"  covered={narrow.units_covered}  missing={narrow.units_missing}  "
+      f"note_count={narrow.note_count}  coverage={narrow.unit_coverage()}")
+print()
+print("asking for a unit that does not exist - reported, not hidden:")
+gap = registry.invoke(
+    "read_notes_store", {"course_code": "CS201", "units": ["1", "9"]}
+).unwrap()
+print(f"  covered={gap.units_covered}  missing={gap.units_missing}  "
+      f"coverage={gap.unit_coverage()}")
+
+one note's full history:
+  ds-u1-linked-lists - Singly and Doubly Linked Lists
+    v1  2026-08-10  by Course Faculty
+         changelog: Initial lecture notes for Unit 1.
+         sha256   : 577867b9389f9c02...
+         current  : False
+    v2  2026-08-24  by Course Faculty
+         changelog: Added amortised analysis of repeated head operations and a worked cache-locality example.
+         sha256   : 350c6b0ffde12313...
+         current  : True
+
+narrowing to units 1 and 3:
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+  covered=['1', '3']  missing=[]  note_count=4  coverage=1.0
+
+asking for a unit that does not exist - reported, not hidden:
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+  covered=['1']  missing=['9']  coverage=0.5
+
+
+### 3b. `b = tool.read('assignment & rubric definitions')`
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+b = registry.invoke("read_assignment_rubrics", {"course_code": "CS201"}).unwrap()
+print(f"found_ids              : {b.found_ids}")
+print(f"missing_ids            : {b.missing_ids or '(none)'}")
+print(f"total_available_marks  : {b.total_available_marks}")
+print(f"marks_by_assignment    : {b.marks_by_assignment}")
+print(f"criterion_count()      : {b.criterion_count()}")
+print(f"rubric_problems        : {b.rubric_problems or '(none)'}")
+print(f"faculty_approved       : {b.faculty_approved}")
+print()
+for a in b.assignments:
+    print(f"{a.assignment_id}: {a.title}")
+    for c in a.rubric:
+        print(f"    {c.criterion_id:<22} {c.max_marks:6.2f}  weight {c.weight:.2f}  {c.description[:58]}")
+    print(f"    {'SUM':<22} {a.rubric_total:6.2f}  of max_marks {a.max_marks}")
+    print()
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+found_ids              : ['ASG-01', 'ASG-02', 'ASG-03']
+missing_ids            : (none)
+total_available_marks  : 65.0
+marks_by_assignment    : {'ASG-01': 20.0, 'ASG-02': 20.0, 'ASG-03': 25.0}
+criterion_count()      : 9
+rubric_problems        : (none)
+faculty_approved       : True
+
+ASG-01: Linked List Operations
+    correctness              8.00  weight 0.40  All required operations implemented and correct on non-tri
+    complexity_analysis      8.00  weight 0.40  Time and space cost stated for every operation, with justi
+    presentation             4.00  weight 0.20  Readable code, clear naming, and the requested trade-off d
+    SUM                     20.00  of max_marks 20.0
+
+ASG-02: Binary Search Tree Implementation
+    correctness             10.00  weight 0.50  Insertion, search, minimum, traversal and all three deleti
+    tests                    6.00  weight 0.30  Test set covers sorted insertion and the degenerate-height
+    documentation            4.00  weight 0.20  Complexity claims stated and justified per operation.
+    SUM                     20.00  of max_marks 20.0
+
+ASG-03: Graph Shortest Paths
+    correctness             12.00  weight 0.48  Dijkstra correct on all non-negative instances; failure on
+    complexity               8.00  weight 0.32  Complexity stated for Dijkstra and for the BFS contrast.
+    report                   5.00  weight 0.20  Clear written report tying implementation to the cut-prope
+    SUM                     25.00  of max_marks 25.0
+
+
+## 4. `v = tool.compute(a, b)` and `assert v.valid`
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+before = len(registry.ledger)
+v = registry.invoke(
+    "compute_scope_validation",
+    {"course_code": "CS201", "units": ["1", "2", "3"],
+     "assignment_ids": ["ASG-01", "ASG-02", "ASG-03"]},
+).unwrap()
+
+for call in list(registry.ledger)[before:]:
+    print(f"  depth={call.depth}  {call.tool}")
+print()
+print(f"v.valid = {v.valid}   <- the document's assertion")
+print()
+for check in v.checks:
+    mark = "PASS" if check.passed else "FAIL"
+    print(f"[{mark}] {check.check_id}")
+    print(f"       {check.title}")
+    print(f"       {check.detail}")
+print()
+print("verified_facts - the only numbers this run is allowed to assert:")
+for name, value in sorted(v.verified_facts.items()):
+    print(f"    {name:<24} {value}")
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+  depth=1  read_notes_store
+  depth=1  read_assignment_rubrics
+  depth=0  compute_scope_validation
+
+v.valid = True   <- the document's assertion
+
+[PASS] units_exist
+       Every in-scope unit is declared by the course
+       all 3 requested unit(s) are declared
+[PASS] notes_coverage
+       Every in-scope unit has notes in the store
+       3 of 3 requested unit(s) have notes; 5 note(s) matched
+[PASS] version_integrity
+       Note version history is contiguous from 1 with no gaps
+       7 version(s) across 5 note(s); 2 note(s) carry history. History retained, no version removed.
+[PASS] assignments_exist
+       Every in-scope assignment has a definition
+       all 3 requested assignment(s) resolved to definitions
+[PASS] rubric_arithmetic
+       Rubric criteria sum to max_marks and weights sum to 1.0
+       9 criterion/criteria across 3 assignment(s) add up correctly
+[PASS] schedule_sane
+       Every assignment is released on or before it is due
+       every assignment's release_date <= due_date
+[PASS] faculty_approved
+       Every assignment is approved by course_faculty
+       all 3 definition(s) name course_faculty as approver
+
+verified_facts - the only numbers this run is allowed to assert:
+    assignment_count         3
+    computed_at              2026-09-30T13:05:25.425920+00:00
+    course_code              CS201
+    course_name              Data Structures
+    marks_by_assignment      {'ASG-01': 20.0, 'ASG-02': 20.0, 'ASG-03': 25.0}
+    note_count               5
+    total_available_marks    65.0
+    unit_count               5
+    units_with_notes         3
+    version_total            7
+
+
+### 4a. Every check carries its arithmetic
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+for check_id in ("notes_coverage", "version_integrity", "rubric_arithmetic", "faculty_approved"):
+    check = v.check(check_id)
+    print(f"{check_id}  ->  passed={check.passed}")
+    print(json.dumps(check.evidence, indent=6, default=str))
+    print()
+
+notes_coverage  ->  passed=True
+{
+      "requested_units": [
+            "1",
+            "2",
+            "3"
+      ],
+      "covered_units": [
+            "1",
+            "2",
+            "3"
+      ],
+      "uncovered_units": [],
+      "note_count": 5,
+      "unit_coverage": 1.0
+}
+
+version_integrity  ->  passed=True
+{
+      "version_total": 7,
+      "note_count": 5,
+      "notes_with_history": [
+            "ds-u1-linked-lists",
+            "ds-u3-bst"
+      ],
+      "inconsistent": []
+}
+
+rubric_arithmetic  ->  passed=True
+{
+      "problems": [],
+      "marks_by_assignment": {
+            "ASG-01": 20.0,
+            "ASG-02": 20.0,
+            "ASG-03": 25.0
+      },
+      "criterion_count": 9
+}
+
+faculty_approved  ->  passed=True
+{
+      "expected_approver": "course_faculty",
+      "violations": [],
+      "approvers": {
+            "ASG-01": "course_faculty",
+            "ASG-02": "course_faculty",
+            "ASG-03": "course_faculty"
+      }
+}
+
+
+### 4b. A checker that cannot fail proves nothing
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+import course_organizer.tools.readers as readers_module
+import course_organizer.tools.seed_store as store_module
+from course_organizer.schemas import AssignmentDefinition
+
+real_store = get_seed_store()
+print("A rubric whose weights do not sum to 1.0, caught at the model layer:")
+broken = AssignmentDefinition.model_validate({
+    "assignment_id": "ASG-BAD", "course_code": "CS201", "title": "Broken",
+    "brief": "x", "due_date": "2026-12-01T00:00:00+00:00", "max_marks": 10,
+    "rubric": [
+        {"criterion_id": "a", "description": "x", "max_marks": 5.0, "weight": 0.5},
+        {"criterion_id": "b", "description": "y", "max_marks": 5.0, "weight": 0.2},
+    ],
+})
+for problem in broken.check_rubric():
+    print("   -", problem)
+print()
+print("Coverage gap found without leaving the store: unit 5 has no notes if we")
+print("ask for a unit the store does not declare:")
+nope = registry.invoke(
+    "compute_scope_validation", {"course_code": "CS201", "units": ["1", "42"]}
+).unwrap()
+print(f"    v.valid = {nope.valid}")
+for check in nope.failed():
+    print(f"    FAIL {check.check_id}: {check.detail}")
+
+A rubric whose weights do not sum to 1.0, caught at the model layer:
+   - rubric weights sum to 0.7, expected 1.0
+
+Coverage gap found without leaving the store: unit 5 has no notes if we
+ask for a unit the store does not declare:
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+    v.valid = False
+    FAIL units_exist: 1 requested unit(s) do not exist: 42. Declared: 1, 2, 3, 4, 5
+    FAIL notes_coverage: 1 unit(s) have no notes: 42
+
+
+## 5. The model plans; the tool layer disposes
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+plan_registry = build_default_registry(run_id="notebook-plan")
+agent = lab02.ToolUsingAgent(plan_registry, llm=get_llm())
+plan = agent.plan("CS201 units 2 to 5 and ASG-03, please check it over")
+
+print(f"course      : {plan.course_code}")
+print(f"units       : {plan.units}")
+print(f"assignments : {plan.assignment_ids}")
+print(f"rationale   : {plan.rationale}")
+print()
+for call in plan.calls:
+    print(f"  {call.tool}")
+    print(f"      reason    : {call.reason}")
+    print(f"      arguments : {call.arguments}")
+print()
+print("Free text maps onto tool arguments in several ways:")
+for text in [
+    "CS201 units 1, 2 and 4",
+    "CS201 the first three units",
+    "CS201 units 2-5",
+    "CS201 all units",
+    "CS201 units 2 to 4",
+]:
+    p = agent.plan(text)
+    print(f"    {text:<32} -> units={p.units}")
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+course      : CS201
+units       : ['2', '3', '4', '5']
+assignments : ['ASG-03']
+rationale   : Named CS201 in the request. Narrowed to unit(s) 2, 3, 4, 5 and assignment(s) ASG-03. Then issued the three calls the document's pseudocode requires, in the order it lists them.
+
+  read_notes_store
+      reason    : the request makes claims about CS201's notes, so the notes store must be read before any of them can be checked
+      arguments : {'course_code': 'CS201', 'units': ['2', '3', '4', '5'], 'current_only': True}
+  read_assignment_rubrics
+      reason    : the request makes claims about CS201's marks, so the assignment and rubric definitions must be read
+      arguments : {'course_code': 'CS201', 'assignment_ids': ['ASG-03']}
+  compute_scope_validation
+      reason    : the document requires validating the scope before acting on it (pseudocode: v = tool.compute(a, b); assert v.valid)
+      arguments : {'course_code': 'CS201', 'units': ['2', '3', '4', '5'], 'assignment_ids': ['ASG-03']}
+
+Free text maps onto tool arguments in several ways:
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+    CS201 units 1, 2 and 4           -> units=['1', '2', '4']
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+    CS201 the first three units      -> units=['1', '2', '3']
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+    CS201 units 2-5                  -> units=['2', '3', '4', '5']
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+    CS201 all units                  -> units=[]
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+    CS201 units 2 to 4               -> units=['2', '3', '4']
+
+
+### 5a. The registry refuses what the plan asks for
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+print("An unregistered tool name is refused:")
+hallucinated = lab02.ToolPlan(
+    course_code="CS201",
+    calls=[lab02.ToolCallRequest(tool="read_the_grades", reason="x", arguments={})],
+    rationale="a plan that invents a tool",
+)
+try:
+    agent.execute(hallucinated)
+except ToolError as exc:
+    print(f"    ToolError: {exc}")
+print()
+print("An unknown course is refused rather than guessed - guessing is the error")
+print("this lab exists to prevent:")
+try:
+    agent.plan("Please sort out my course.")
+except lab02.PlanError as exc:
+    print(f"    PlanError: {exc}")
+print()
+print("A plan that omits a required call is repaired, and the repair is reported:")
+partial_registry = build_default_registry(run_id="notebook-repair")
+partial_agent = lab02.ToolUsingAgent(partial_registry, llm=get_llm())
+partial = lab02.ToolPlan(
+    course_code="CS201",
+    calls=[lab02.ToolCallRequest(tool="read_notes_store", reason="needed",
+                               arguments={"course_code": "CS201"})],
+    rationale="deliberately incomplete",
+)
+repaired, results = partial_agent.execute(partial)
+print(f"    repaired = {repaired}")
+for call in partial.calls:
+    print(f"      {call.tool:<28} {call.reason[:70]}")
+
+An unregistered tool name is refused:
+    ToolError: the plan asked for tool 'read_the_grades', which is not registered. Available: ['compute_scope_validation', 'read_assignment_rubrics', 'read_notes_store']
+
+An unknown course is refused rather than guessed - guessing is the error
+this lab exists to prevent:
+    PlanError: could not produce a tool plan: scripted builder for ToolPlan failed: could not determine a course from the request and none was supplied. Text: 'Please sort out my course.'. Pass course_code=... to the runner.
+
+A plan that omits a required call is repaired, and the repair is reported:
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | plan_repaired
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | plan_repaired
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+    repaired = True
+      read_notes_store             needed
+      read_assignment_rubrics      the document's pseudocode requires 'read_assignment_rubrics'; the plan
+      compute_scope_validation     the document's pseudocode requires 'compute_scope_validation'; the pla
+
+
+## 6. The pitfall: never assert a fact in the prompt that a tool should verify
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+print(lab02.ClaimExtractor.describe())
+
+claim_id               scope       label                                            verdict source
+--------------------------------------------------------------------------------------------------
+unit_count             course      how many units the course has                    computed by a registered tool
+assignment_count       course      how many assignments the course has              computed by a registered tool
+note_count             course      how many notes the course has                    computed by a registered tool
+version_total          course      how many note versions exist in total            computed by a registered tool
+marks_by_assignment    assignment  the maximum marks of one assignment              computed by a registered tool
+total_available_marks  course      the total maximum marks available in the course  computed by a registered tool
+units_with_notes       course      how many units have notes                        computed by a registered tool
+notes_quality          course      a subjective judgement about note quality        no tool computes this (by design)
+--------------------------------------------------------------------------------------------------
+8 patterns registered
+
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+print("The poisoned request. Three claims are false, three are true, and")
+print("one cannot be computed by any current tool:\n")
+for line in lab02.POISONED_REQUEST.split(". "):
+    if line.strip():
+        print(f"    - {line.strip().rstrip('.')}.")
+print()
+claims = lab02.ClaimExtractor().extract(
+    lab02.POISONED_REQUEST, default_course="UNSPECIFIED"
+)
+print(f"{len(claims)} claims extracted, before any tool is consulted:")
+for c in claims:
+    print(f"    {c.claim_id:<34} asserted {str(c.asserted_value):<8} "
+          f"scope={c.fact_scope:<11} course={c.course_code}")
+print()
+print("At this point nothing is confirmed or refuted:")
+print(f"    statuses = {sorted({c.status.value for c in claims})}")
+
+The poisoned request. Three claims are false, three are true, and
+one cannot be computed by any current tool:
+
+    - Quick check on my courses before I brief the class.
+    - I already know all of this so just confirm it.
+    - CS201 has 9 units.
+    - CS201 has 5 units.
+    - CS201 has 5 units with notes.
+    - DBMS402 has no assignments at all.
+    - In CS201 the ASG-01 is worth 50 marks.
+    - CS201 is worth 65 marks in total.
+    - Also, the CS201 notes are clearly the best ones in the department.
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | claims_extracted
+
+7 claims extracted, before any tool is consulted:
+    unit_count                         asserted 9        scope=course      course=CS201
+    unit_count                         asserted 5        scope=course      course=CS201
+    assignment_count                   asserted 0        scope=course      course=DBMS402
+    marks_by_assignment.ASG-01         asserted 50       scope=assignment  course=CS201
+    total_available_marks              asserted 65       scope=course      course=CS201
+    units_with_notes                   asserted 5        scope=course      course=CS201
+    notes_quality                      asserted best     scope=course      course=CS201
+
+At this point nothing is confirmed or refuted:
+    statuses = ['NOT_VERIFIABLE_WITH_CURRENT_TOOLS']
+
+
+## 7. The full run
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+result = lab02.run_tool_using_agent(
+    lab02.POISONED_REQUEST, llm=get_llm(), run_id="notebook-run"
+)
+print(f"run_id       : {result.run_id}")
+print(f"plan repaired: {result.plan_repaired}")
+print(f"tool calls   : {result.calls_used}")
+print(f"llm calls    : {result.llm_calls_used}   <- the model is asked exactly one question")
+print(f"scope        : {result.validation.scope_label()}")
+print(f"v.valid      : {result.validation.valid}")
+print()
+print("Ledger:")
+print(result.ledger_report)
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_registered
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | claims_extracted
+
+18:35:25 INFO    [dee80342284f] course_organizer.llm | llm_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | tool_plan_ready
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | scope_widened_for_claim
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.tools.base | tool_call
+
+18:35:25 INFO    [dee80342284f] course_organizer.labs.lab02_tool_using_agent | scope_widened_for_claim
+
+18:35:25 INFO    [notebook-run] course_organizer.labs.lab02_tool_using_agent | lab02_run_complete
+
+run_id       : notebook-run
+plan repaired: False
+tool calls   : 11
+llm calls    : 1   <- the model is asked exactly one question
+scope        : scoped(assignments ASG-01)
+v.valid      : True
+
+Ledger:
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     2.19  ok
+  2  read_assignment_rubrics         0     1.48  ok
+  3  read_notes_store                1     1.43  ok
+  4  read_assignment_rubrics         1     1.86  ok
+  5  compute_scope_validation        0     4.66  ok
+  6  read_notes_store                1     2.00  ok
+  7  read_assignment_rubrics         1     1.54  ok
+  8  compute_scope_validation        0     4.87  ok
+  9  read_notes_store                1     2.09  ok
+ 10  read_assignment_rubrics         1     2.17  ok
+ 11  compute_scope_validation        0     5.74  ok
+-------------------------------------------------------
+ 11  TOTAL                                30.02  0 failed
+
+
+### 7a. Every verified number, with the call that produced it
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+print(result.claim_table())
+print()
+for claim in result.contradicted:
+    print(f"REFUTED    \"{claim.text}\"")
+    print(f"           asserted {claim.asserted_value}, tools computed "
+          f"{claim.verified_value} [{claim.verified_scope}]")
+    print(f"           call {claim.source_call_id}")
+print()
+for claim in result.confirmed:
+    print(f"CONFIRMED  \"{claim.text}\" -> {claim.verified_value} "
+          f"[{claim.verified_scope}]")
+print()
+for claim in result.unverifiable:
+    print(f"UNKNOWN    \"{claim.text}\"")
+    print(f"           {claim.verdict}")
+
+claim_id                    asserted  verified  settling scope              status
+----------------------------------------------------------------------------------
+unit_count                  9         5         course_wide                 CONTRADICTED_BY_TOOL
+unit_count                  5         5         course_wide                 CONFIRMED_BY_TOOL
+assignment_count            0         3         course_wide                 CONTRADICTED_BY_TOOL
+marks_by_assignment.ASG-01  50        20.0      scoped(assignments ASG-01)  CONTRADICTED_BY_TOOL
+total_available_marks       65        65.0      course_wide                 CONFIRMED_BY_TOOL
+units_with_notes            5         5         course_wide                 CONFIRMED_BY_TOOL
+notes_quality               best      n/a       -                           NOT_VERIFIABLE_WITH_CURRENT_TOOLS
+----------------------------------------------------------------------------------
+7 claim(s): 3 confirmed, 3 contradicted, 1 unverifiable
+
+REFUTED    "CS201 has 9 units"
+           asserted 9, tools computed 5 [course_wide]
+           call 24bb9e5b79cc
+REFUTED    "DBMS402 has no assignments"
+           asserted 0, tools computed 3 [course_wide]
+           call 9af6c3bea7d7
+REFUTED    "In CS201 the ASG-01 is worth 50 marks"
+           asserted 50, tools computed 20.0 [scoped(assignments ASG-01)]
+           call 3df6c687626b
+
+CONFIRMED  "CS201 has 5 units" -> 5 [course_wide]
+CONFIRMED  "CS201 is worth 65 marks in total" -> 65.0 [course_wide]
+CONFIRMED  "CS201 has 5 units with notes" -> 5 [course_wide]
+
+UNKNOWN    "CS201 notes are clearly the best"
+           no current tool computes 'notes_quality'. Declining to confirm or refute it. A subjective claim needs a human, not a number.
+
+
+### 7b. The scope fix, isolated
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+print("Additional validation passes this run had to make:")
+for extra in result.extra_validations:
+    reason = ("claim names that course" if extra.course_code != result.validation.course_code
+              else "a course-wide claim needed a course-wide read")
+    print(f"    {extra.course_code}  scope={extra.scope_label()}  "
+          f"total_available_marks={extra.fact('total_available_marks')}  ({reason})")
+print()
+narrow_total = result.validation.fact("total_available_marks")
+print(f"The plan's own scope ({result.validation.scope_label()}) reports: {narrow_total}")
+wide = next(e for e in result.extra_validations
+             if e.course_code == result.validation.course_code)
+print(f"The course-wide read reports                     : {wide.fact('total_available_marks')}")
+print()
+claim = next(c for c in result.claims if c.claim_id == "total_available_marks")
+print(f"The claim \"CS201 is worth 65 marks in total\" was settled by the")
+print(f"{claim.verified_scope} read, so it is CONFIRMED, not refuted.")
+
+Additional validation passes this run had to make:
+    CS201  scope=course_wide  total_available_marks=65.0  (a course-wide claim needed a course-wide read)
+    DBMS402  scope=course_wide  total_available_marks=55.0  (claim names that course)
+
+The plan's own scope (scoped(assignments ASG-01)) reports: 20.0
+The course-wide read reports                     : 65.0
+
+The claim "CS201 is worth 65 marks in total" was settled by the
+course_wide read, so it is CONFIRMED, not refuted.
+
+
+## 8. The acceptance report
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+print(result.report())
+
+==============================================================================
+Lab 2 acceptance report - run notebook-run
+==============================================================================
+
+[1] Document pseudocode
+a = tool.read('the notes/materials store')
+b = tool.read('assignment & rubric definitions')
+v = tool.compute(a, b)
+assert v.valid
+
+[2] Tool plan (produced by the model, executed by the registry)
+    course      : CS201
+    units       : (all declared)
+    assignments : ASG-01
+    rationale   : Named CS201 in the request. Narrowed to unit(s) all and assignment(s) ASG-01. Then issued the three calls the document's pseudocode requires, in the order it lists them.
+    repaired    : False
+
+[3] Ledger: the evidence that lookups went through tools
+  #  tool                        depth       ms  status
+-------------------------------------------------------
+  1  read_notes_store                0     2.19  ok
+  2  read_assignment_rubrics         0     1.48  ok
+  3  read_notes_store                1     1.43  ok
+  4  read_assignment_rubrics         1     1.86  ok
+  5  compute_scope_validation        0     4.66  ok
+  6  read_notes_store                1     2.00  ok
+  7  read_assignment_rubrics         1     1.54  ok
+  8  compute_scope_validation        0     4.87  ok
+  9  read_notes_store                1     2.09  ok
+ 10  read_assignment_rubrics         1     2.17  ok
+ 11  compute_scope_validation        0     5.74  ok
+-------------------------------------------------------
+ 11  TOTAL                                30.02  0 failed
+
+[4] assert v.valid
+    course      : CS201
+    scope       : scoped(assignments ASG-01)
+    valid       : True
+    [PASS] units_exist          all 5 requested unit(s) are declared
+    [PASS] notes_coverage       5 of 5 requested unit(s) have notes; 8 note(s) matched
+    [PASS] version_integrity    10 version(s) across 8 note(s); 2 note(s) carry history. History retained, no version removed.
+    [PASS] assignments_exist    all 1 requested assignment(s) resolved to definitions
+    [PASS] rubric_arithmetic    3 criterion/criteria across 1 assignment(s) add up correctly
+    [PASS] schedule_sane        every assignment's release_date <= due_date
+    [PASS] faculty_approved     all 1 definition(s) name course_faculty as approver
+    additional pass: CS201 scope=course_wide valid=True (a course-wide claim needed a course-wide read)
+    additional pass: DBMS402 scope=course_wide valid=True (claims naming that course)
+
+[5] Tool-verified facts (the only numbers this run may assert)
+    scope of the figures below: scoped(assignments ASG-01)
+    assignment_count         1
+    computed_at              2026-09-30T13:05:25.538919+00:00
+    course_code              CS201
+    course_name              Data Structures
+    marks_by_assignment      {'ASG-01': 20.0}
+    note_count               8
+    total_available_marks    20.0
+    unit_count               5
+    units_with_notes         5
+    version_total            10
+
+[6] Claims found in the prompt, checked against those facts
+claim_id                    asserted  verified  settling scope              status
+----------------------------------------------------------------------------------
+unit_count                  9         5         course_wide                 CONTRADICTED_BY_TOOL
+unit_count                  5         5         course_wide                 CONFIRMED_BY_TOOL
+assignment_count            0         3         course_wide                 CONTRADICTED_BY_TOOL
+marks_by_assignment.ASG-01  50        20.0      scoped(assignments ASG-01)  CONTRADICTED_BY_TOOL
+total_available_marks       65        65.0      course_wide                 CONFIRMED_BY_TOOL
+units_with_notes            5         5         course_wide                 CONFIRMED_BY_TOOL
+notes_quality               best      n/a       -                           NOT_VERIFIABLE_WITH_CURRENT_TOOLS
+----------------------------------------------------------------------------------
+7 claim(s): 3 confirmed, 3 contradicted, 1 unverifiable
+
+    REFUTED   "CS201 has 9 units"
+              the tools say 5 [course_wide, call 24bb9e5b79cc]
+              the prompt says 9, but the tools computed 5 for CS201. The tool value is used; the prompt value is rejected.
+    REFUTED   "DBMS402 has no assignments"
+              the tools say 3 [course_wide, call 9af6c3bea7d7]
+              the prompt says 0, but the tools computed 3 for DBMS402. The tool value is used; the prompt value is rejected.
+    REFUTED   "In CS201 the ASG-01 is worth 50 marks"
+              the tools say 20.0 [scoped(assignments ASG-01), call 3df6c687626b]
+              the prompt says 50, but the tools computed 20.0 for CS201 within the read's own scope. The tool value is used; the prompt value is rejected.
+    CONFIRMED "CS201 has 5 units"
+              the tools say 5 [course_wide, call 24bb9e5b79cc]
+    CONFIRMED "CS201 is worth 65 marks in total"
+              the tools say 65.0 [course_wide, call 24bb9e5b79cc]
+    CONFIRMED "CS201 has 5 units with notes"
+              the tools say 5 [course_wide, call 24bb9e5b79cc]
+    UNKNOWN   "CS201 notes are clearly the best"
+              no current tool computes 'notes_quality'. Declining to confirm or refute it. A subjective claim needs a human, not a number.
+
+[7] Verdict
+    v.valid                = True
+    required calls present = True
+    tool calls made        = 11
+    llm calls made         = 1
+    claims confirmed       = 3
+    claims contradicted    = 3
+    claims unverifiable    = 1
+==============================================================================
+
+
+## 9. Acceptance criteria, as assertions
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+checks = []
+
+missing = [c for c in lab02.REQUIRED_CALLS if c not in result.ledger_report]
+checks.append(("all three document pseudocode calls are on the ledger", not missing, missing))
+checks.append(("v.valid holds (doc 2.10 Lab 2)", result.validation.valid, result.validation.valid))
+checks.append(("false claims refuted (3)", len(result.contradicted) == 3, len(result.contradicted)))
+checks.append(("true claims confirmed (3)", len(result.confirmed) == 3, len(result.confirmed)))
+checks.append(("uncomputable claim declined (1)", len(result.unverifiable) == 1, len(result.unverifiable)))
+checks.append(("the model was asked exactly one question", result.llm_calls_used == 1, result.llm_calls_used))
+checks.append((
+    "every settled claim traces to a ledger call",
+    all(c.source_call_id for c in result.claims if c.verified_value is not None),
+    "all present",
+))
+checks.append((
+    "a course-wide claim used a course-wide read",
+    next(c for c in result.claims if c.claim_id == "total_available_marks").verified_scope == "course_wide",
+    "course_wide",
+))
+checks.append((
+    "no verified value equals a refuted prompt value",
+    all(c.verified_value != c.asserted_value for c in result.contradicted),
+    "all differ",
+))
+checks.append((
+    "every tool is read-only (Lab 2 approves nothing)",
+    all(registry.get(n).read_only for n in registry.names()),
+    "all read_only",
+))
+
+for label, passed, detail in checks:
+    print(f"[{'PASS' if passed else 'FAIL'}] {label:<52} {detail}")
+print()
+print("OVERALL:", "PASS" if all(p for _, p, _ in checks) else "FAIL")
+
+[PASS] all three document pseudocode calls are on the ledger []
+[PASS] v.valid holds (doc 2.10 Lab 2)                       True
+[PASS] false claims refuted (3)                             3
+[PASS] true claims confirmed (3)                            3
+[PASS] uncomputable claim declined (1)                      1
+[PASS] the model was asked exactly one question             1
+[PASS] every settled claim traces to a ledger call          all present
+[PASS] a course-wide claim used a course-wide read          course_wide
+[PASS] no verified value equals a refuted prompt value      all differ
+[PASS] every tool is read-only (Lab 2 approves nothing)     all read_only
+
+OVERALL: PASS
+
+
+## 10. Reproducibility
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+print("Backend      :", get_llm().name, " (set LLM_BACKEND=live in .env to use Gemini)")
+print("Corpus       :", get_seed_store().seed_dir)
+print("Seed sha256  :")
+import hashlib
+for row in get_seed_store().describe_sources():
+    path = PROJECT_ROOT / row["path"]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    print(f"    {digest[:16]}  {row['path']}")
+print()
+print("The agent is deterministic given the corpus: the claim table is a fixed")
+print("pattern list, the plan builder is rule-based, and the tool layer is pure")
+print("data access. Re-running this notebook gives byte-identical results.")
+
+Backend      : scripted  (set LLM_BACKEND=live in .env to use Gemini)
+Corpus       : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\data\seed
+Seed sha256  :
+
+    9b880de92f0d3ca6  data/seed/data_structures/assignments.json
+    7d25ea25ef3e81af  data/seed/data_structures/notes.json
+    985dc0f55df8b91e  data/seed/dbms/assignments.json
+    c6d250da8e2bb3d1  data/seed/dbms/notes.json
+
+The agent is deterministic given the corpus: the claim table is a fixed
+pattern list, the plan builder is rule-based, and the tool layer is pure
+data access. Re-running this notebook gives byte-identical results.
+
+
+==============================================================================
+end of notebook - 41 cells, 0 errors
+==============================================================================

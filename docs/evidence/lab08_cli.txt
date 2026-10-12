@@ -1,0 +1,155 @@
+==============================================================================
+Lab 8 -- Parallel Swarm: fan out the work, merge by plan alignment
+Doc 2.10 -- lower wall-clock at matched quality, selecting by the plan
+==============================================================================
+workspace   : C:\Users\ummea\AppData\Local\Temp\lab08-1_g2wagb
+max attempts: 3
+gate        : course_faculty (approve | edit | override | refuse)
+
+-- Compiled topologies --
+  (read from each compiled graph, not from a declared constant)
+  swarm topology (parallel):
+    [edge] __start__ -> ingest
+    [edge] assemble -> gate
+    [edge] escalate -> __end__
+    [cond] gate -> escalate
+    [cond] gate -> publish
+    [edge] ingest -> plan
+    [edge] plan -> workers
+    [edge] publish -> __end__
+    [cond] swarm_dispatch -> swarm_worker
+    [edge] swarm_merge -> validate
+    [edge] swarm_worker -> swarm_merge
+    [cond] validate -> assemble
+    [cond] validate -> escalate
+    [cond] validate -> workers
+    [edge] workers -> swarm_dispatch
+  swarm topology (sequential):
+    [edge] __start__ -> ingest
+    [edge] assemble -> gate
+    [edge] escalate -> __end__
+    [cond] gate -> escalate
+    [cond] gate -> publish
+    [edge] ingest -> plan
+    [edge] plan -> workers
+    [edge] publish -> __end__
+    [edge] swarm_merge -> validate
+    [edge] swarm_sequential -> swarm_merge
+    [cond] validate -> assemble
+    [cond] validate -> escalate
+    [cond] validate -> workers
+    [edge] workers -> swarm_sequential
+
+-- 1. Parallel: the Send fan-out --
+  summary     : run=parallel status=draft nodes=7 attempts=1 gate=awaiting_faculty
+  nodes       : ingest -> plan -> workers -> swarm_dispatch -> swarm_merge -> validate -> assemble
+  work items  : 13 (8 submission + 5 unit)
+  candidates  : 39 produced, 13 selected, 26 logged as rejected
+  quality     : 1.0 (by kind {'submission': 1.0, 'unit': 1.0})
+  timing      : mode=parallel, tasks=39, stage=51.204ms, span=43.776ms, sum_task=263.425ms, peak_overlap=8
+
+  selection by plan alignment (line 710):
+    work item              kind       winner      align  rejected
+    submission:DS-A1-S001  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A1-S002  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A1-S003  submission strict        1.0  generous=0.6, sparse=0.2
+    submission:DS-A1-S004  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A2-S005  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A2-S006  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A3-S007  submission strict        1.0  generous=1.0, sparse=0.2
+    submission:DS-A3-S008  submission strict        1.0  generous=1.0, sparse=0.2
+    unit:1                 unit       complete      1.0  outline=0.2, overclaimed=0.2
+    unit:2                 unit       complete      1.0  outline=1.0, overclaimed=0.2
+    unit:3                 unit       complete      1.0  outline=0.2, overclaimed=0.2
+    unit:4                 unit       complete      1.0  outline=1.0, overclaimed=0.2
+    unit:5                 unit       complete      1.0  outline=0.2, overclaimed=0.2
+
+-- 2. Sequential: the same candidates, one at a time --
+  summary     : run=sequential status=draft nodes=7 attempts=1 gate=awaiting_faculty
+  nodes       : ingest -> plan -> workers -> swarm_sequential -> swarm_merge -> validate -> assemble
+  candidates  : 39 produced, 13 selected
+  quality     : 1.0
+  timing      : mode=sequential, tasks=39, stage=66.51ms, span=66.484ms, sum_task=65.798ms, peak_overlap=1
+
+-- Parallel vs sequential --
+    mode           stage_ms    span_ms  sum_task_ms  overlap  quality
+    parallel         51.204     43.776      263.425        8      1.0
+    sequential        66.51     66.484       65.798        1      1.0
+    stage-speedup: 1.30x at identical quality
+
+-- 3. Approval: the parallel draft through the human gate --
+  before resume: run=approved status=draft nodes=7 attempts=1 gate=awaiting_faculty
+  after resume : run=approved status=published nodes=9 attempts=1 published=C:\Users\ummea\AppData\Local\Temp\lab08-1_g2wagb\approved\DOC-CS201-organised-course-4f12bcb7d9.md
+  published    : C:\Users\ummea\AppData\Local\Temp\lab08-1_g2wagb\approved\DOC-CS201-organised-course-4f12bcb7d9.md
+  length       : 4713 ASCII char(s), approval marker present: True
+  grades       : 8 approved
+
+-- 4. The bound: on exhaustion, escalate with a diagnosis --
+  summary     : run=exhaustion status=escalated nodes=15 attempts=3 escalated=retry_budget_exhausted
+  nodes       : ingest -> plan -> workers -> swarm_dispatch -> swarm_merge -> validate -> workers -> swarm_dispatch -> swarm_merge -> validate -> workers -> swarm_dispatch -> swarm_merge -> validate -> escalate
+  reason      : retry_budget_exhausted
+  attempts    : 3 of 3
+  failing     : draft_grade_within_rubric_maximum, similarity_score_attached
+  diagnosis   : Validation still failing after 3 of 3 permitted attempt(s); the run stopped rather than retrying forever. Attempt 3 validation failed 2 of 4 check(s): draft_grade_within_rubric_maximum, similarity_score_attached. draft_grade_within_rubric_maximum: DS-A1-S001 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S002 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S003 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S004 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A2-S005 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A2-S006 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A3-S007 was awarded 27.5 against a rubric maximum of 25 for ASG-03; DS-A3-S008 was awarded 27.5 against a rubric maximum of 25 for ASG-03. similarity_score_attached: 8 of 8 submission(s) have no similarity score: DS-A1-S001, DS-A1-S002, DS-A1-S003, DS-A1-S004, DS-A2-S005, DS-A2-S006, DS-A3-S007, DS-A3-S008. To clear this: re-score the affected submission(s) against the faculty-approved rubric, or raise the rubric maximum itself -- the second needs a faculty decision recorded first; run the similarity step for the submission(s) with no score; an absent score is not a zero score. The draft below is the version that failed, so the failing rows can be corrected without re-running.
+
+==============================================================================
+-- Acceptance checks --
+  [PASS]  1. the fan-out node and the merge node are compiled (parallel)
+         compiled swarm nodes: swarm_dispatch, swarm_merge, swarm_worker
+  [PASS]  2. swarm_dispatch --Send--> swarm_worker is a conditional edge
+         read from the compiled graph, not a declared constant
+  [PASS]  3. swarm_worker --> swarm_merge is the fan-in edge
+         all workers join once, after the last one finishes
+  [PASS]  4. the sequential graph has a loop node and no Send worker
+         compiled swarm nodes: swarm_merge, swarm_sequential
+  [PASS]  5. Lab 7's back-edge survives under the swarm
+         a retry re-runs the swarm stage as well, which is the point
+  [PASS]  6. both work-item kinds are fanned out
+         8 submission item(s) + 5 unit item(s) = 13
+  [PASS]  7. submission work is dispatched before unit work (priority)
+         submission priority=2, unit priority=1, weights 21
+  [PASS]  8. every work item is processed and gets a selected candidate
+         13 selected of 13 item(s)
+  [PASS]  9. each item is best-of-N: three candidates, losers logged
+         39 candidate(s), 26 rejected
+  [PASS] 10. every candidate is logged with its alignment and its screen
+         39 merge decision(s), each with satisfied/violated
+  [PASS] 11. merge selects the maximum plan-alignment candidate per item
+         selected alignment equals the max over the item's candidates
+  [PASS] 12. the 'nicest' (highest-marked) candidate is rejected
+         submission:DS-A1-S001: generous awarded 17.48 rejected; strict awarded 15.89 selected at alignment 1.0
+  [PASS] 13. parallel and sequential select identical candidates
+         13 item(s), same winner in both modes
+  [PASS] 14. parallel quality matches or beats sequential quality
+         parallel=1.0 sequential=1.0
+  [PASS] 15. quality is priority-weighted (submission 2 : unit 1)
+         quality=1.0, by kind={'submission': 1.0, 'unit': 1.0}, weights 16:5
+  [PASS] 16. the parallel pass is lower wall-clock than the sequential pass
+         parallel stage=51.204ms < sequential stage=66.51ms (1.30x)
+  [PASS] 17. the fan-out really ran concurrently
+         parallel peak overlap=8, sequential peak overlap=1
+  [PASS] 18. the fan-out stayed inside the measured pool width
+         peak overlap=8 <= SWARM_MAX_CONCURRENCY=8; an unbounded pool measured between 0.71x and 1.58x of sequential depending on the process, so the bound is what makes the check above hold
+  [PASS] 19. the fan-out did not drop any work
+         39 worker interval(s) over 43.776ms of concurrent span
+  [PASS] 20. the parallel run stops at the human gate with doc 2.7 passing
+         status=draft, 4 check(s), 8 merged grade(s)
+  [PASS] 21. resuming does not re-run the swarm or the pre-gate nodes
+         after resume, nodes executed: gate, publish
+  [PASS] 22. an approved run publishes the merged grades
+         status=published, 8 grade(s) approved, 4713 ASCII char(s) published
+  [PASS] 23. the MAX_ATTEMPTS bound still stops a non-converging swarm
+         stopped after 3 of 3 permitted attempt(s)
+  [PASS] 24. the swarm ran on every retry, not just the first
+         swarm_dispatch ran 3 time(s), swarm_merge 3 time(s) for 3 attempts
+  [PASS] 25. the bound escalates with a diagnosis and the failing draft
+         reason=retry_budget_exhausted, 2 failing check(s): draft_grade_within_rubric_maximum, similarity_score_attached
+  [PASS] 26. every candidate's durable evidence record is on disk
+         39 record(s) under parallel/swarm, first parses
+  [PASS] 27. the exhaustion run logged every attempt's candidates
+         117 record(s) across 3 attempt(s)
+
+==============================================================================
+OVERALL: PASS (27/27 checks)
+==============================================================================
+WARNING course_organizer.graph.nodes: escalate escalated to course_faculty: retry_budget_exhausted after 3 attempt(s)

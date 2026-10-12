@@ -1,0 +1,856 @@
+Evidence - lab08_parallel_swarm.ipynb
+==========================
+
+Notebook : notebooks/lab08_parallel_swarm.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 44 cells, 22 code, 22 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 8 - Parallel Swarm: fan out the work, merge by the plan
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+import sys
+from pathlib import Path
+
+ROOT = Path.cwd().resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from course_organizer.labs import lab08_parallel_swarm as lab08
+
+print("python  :", sys.version.split()[0])
+print("package :", ROOT / "src" / "course_organizer")
+
+python  : 3.14.7
+package : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer
+
+
+## The pitfall is the specification
+
+## 1. The document's own vocabulary
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+from course_organizer.graph import (
+    KIND_SUBMISSION,
+    KIND_UNIT,
+    MAX_ATTEMPTS,
+    PRIORITY_SUBMISSION,
+    PRIORITY_UNIT,
+    SUBMISSION_STRATEGIES,
+    SWARM_MAX_CONCURRENCY,
+    SWARM_OUTPUT_ROOT,
+    UNIT_STRATEGIES,
+)
+from course_organizer.graph.swarm import (
+    GENEROUS_FACTOR,
+    SUBMISSION_OBLIGATIONS,
+    UNIT_OBLIGATIONS,
+)
+
+print("work-item kinds   :", KIND_SUBMISSION, "|", KIND_UNIT)
+print("priority          : submission =", PRIORITY_SUBMISSION, ", unit =", PRIORITY_UNIT)
+print("submission offers :", SUBMISSION_STRATEGIES)
+print("unit offers       :", UNIT_STRATEGIES)
+print("generous uplift   : x", GENEROUS_FACTOR)
+print("retry bound       :", MAX_ATTEMPTS, "(Lab 7's bound, unchanged)")
+print("fan-out width     :", SWARM_MAX_CONCURRENCY, "(measured; section 8)")
+print("swarm output root :", SWARM_OUTPUT_ROOT + "/")
+print()
+print("submission screens (doc 2.7 line 558, doc 2.9 line 594):")
+for name in SUBMISSION_OBLIGATIONS:
+    print("   ", name)
+print()
+print("unit coverage screens:")
+for name in UNIT_OBLIGATIONS:
+    print("   ", name)
+
+work-item kinds   : submission | unit
+priority          : submission = 2 , unit = 1
+submission offers : ('strict', 'generous', 'sparse')
+unit offers       : ('complete', 'outline', 'overclaimed')
+generous uplift   : x 1.1
+retry bound       : 3 (Lab 7's bound, unchanged)
+fan-out width     : 8 (measured; section 8)
+swarm output root : lab08/
+
+submission screens (doc 2.7 line 558, doc 2.9 line 594):
+    within_rubric_maximum
+    similarity_attached
+    late_accurate
+    criteria_complete
+    assignment_in_plan
+
+unit coverage screens:
+    notes_covered
+    assignments_in_unit
+    submissions_in_unit
+    no_overclaim
+    unit_in_plan
+
+
+## 2. Two topologies, read off the compiled graph
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+import tempfile
+
+from course_organizer.graph import build_run_context, inspect_swarm
+
+work = Path(tempfile.mkdtemp(prefix="lab08_nb_"))
+ctx = build_run_context("notebook", course_code="CS201", output_dir=work / "inspect")
+
+for mode in (True, False):
+    for line in inspect_swarm(ctx, parallel=mode)["lines"]:
+        print(line)
+    print()
+
+swarm topology (parallel):
+  [edge] __start__ -> ingest
+  [edge] assemble -> gate
+  [edge] escalate -> __end__
+  [cond] gate -> escalate
+  [cond] gate -> publish
+  [edge] ingest -> plan
+  [edge] plan -> workers
+  [edge] publish -> __end__
+  [cond] swarm_dispatch -> swarm_worker
+  [edge] swarm_merge -> validate
+  [edge] swarm_worker -> swarm_merge
+  [cond] validate -> assemble
+  [cond] validate -> escalate
+  [cond] validate -> workers
+  [edge] workers -> swarm_dispatch
+
+swarm topology (sequential):
+  [edge] __start__ -> ingest
+  [edge] assemble -> gate
+  [edge] escalate -> __end__
+  [cond] gate -> escalate
+  [cond] gate -> publish
+  [edge] ingest -> plan
+  [edge] plan -> workers
+  [edge] publish -> __end__
+  [edge] swarm_merge -> validate
+  [edge] swarm_sequential -> swarm_merge
+  [cond] validate -> assemble
+  [cond] validate -> escalate
+  [cond] validate -> workers
+  [edge] workers -> swarm_sequential
+
+
+### A `Send` list is only legal from the conditional edge
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+from course_organizer.graph import build_swarm_graph
+from course_organizer.graph.swarm import swarm_edges
+
+parallel_graph = build_swarm_graph(ctx, parallel=True)
+edges = swarm_edges(parallel_graph)
+pairs = {(src, dst) for src, dst, _c in edges}
+conditional = {(src, dst) for src, dst, c in edges if c}
+
+print(f"{len(edges)} compiled edge(s) in the parallel graph")
+print()
+print("workers -> swarm_dispatch    :", ("workers", "swarm_dispatch") in pairs)
+print("dispatch --Send--> worker    :", ("swarm_dispatch", "swarm_worker") in conditional)
+print("worker --> merge (the fan-in):", ("swarm_worker", "swarm_merge") in pairs)
+print("merge -> validate            :", ("swarm_merge", "validate") in pairs)
+print("validate --fail--> workers   :", ("validate", "workers") in conditional,
+      "(Lab 7's back-edge, intact)")
+print("only the gate can publish    :", {s for s, t, _c in edges if t == "publish"} == {"gate"})
+
+compiled the swarm graph without a checkpointer: the gate will suspend but the run cannot be resumed in another process
+
+15 compiled edge(s) in the parallel graph
+
+workers -> swarm_dispatch    : True
+dispatch --Send--> worker    : True
+worker --> merge (the fan-in): True
+merge -> validate            : True
+validate --fail--> workers   : True (Lab 7's back-edge, intact)
+only the gate can publish    : True
+
+
+## 3. The full parallel run, stopping at the human gate
+### A warm-up, because a cold process is not a fair opponent
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+from course_organizer.graph import run_swarm
+
+runs_root = work / "runs"
+
+warm_root = work / "warmup"
+warm_parallel = run_swarm(
+    course_code="CS201",
+    run_id="warm-parallel",
+    root=warm_root,
+    output_dir=warm_root / "parallel",
+    parallel=True,
+)
+warm_sequential = run_swarm(
+    course_code="CS201",
+    run_id="warm-sequential",
+    root=warm_root,
+    output_dir=warm_root / "sequential",
+    parallel=False,
+)
+for run in (warm_parallel, warm_sequential):
+    timing = run.state["swarm_timing"]
+    print(
+        f"warm-up {timing['mode']:<11} stage={timing['stage_ms']:>8.3f} "
+        f"span={timing['span_ms']:>8.3f}  <- discarded"
+    )
+print("(the gap between stage and span above is interpreter cold start, not swarm work)")
+
+warm-up parallel    stage=  89.094 span=  84.293  <- discarded
+warm-up sequential  stage=  57.821 span=  57.787  <- discarded
+(the gap between stage and span above is interpreter cold start, not swarm work)
+
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+parallel = run_swarm(
+    course_code="CS201",
+    run_id="parallel",
+    root=runs_root,
+    output_dir=runs_root / "parallel",
+    parallel=True,
+)
+
+print("summary      :", parallel.summary())
+print("nodes        :", " -> ".join(parallel.nodes_ran()))
+print("status       :", parallel.status.value)
+print("awaiting gate:", parallel.awaiting_gate)
+print()
+print("audit trail:")
+for entry in parallel.state["audit_trail"]:
+    print(f"  {entry['node']:<16} {entry['summary']}")
+
+summary      : run=parallel status=draft nodes=7 attempts=1 gate=awaiting_faculty
+nodes        : ingest -> plan -> workers -> swarm_dispatch -> swarm_merge -> validate -> assemble
+status       : draft
+awaiting gate: True
+
+audit trail:
+  ingest           scope CS201 (Data Structures): 5 unit(s), 8 note(s), 10 version(s), 3 assignment(s); 7 scope check(s) passed
+  plan             locked 16 obligation(s); plan_sha256=6d88f04886fa
+  workers          pass 1: 6 specialist(s), 0 reported a problem
+  swarm_dispatch   dispatched 13 work item(s) (8 submission(s) first, 5 unit(s))
+  swarm_merge      parallel: selected 13 of 39 candidate(s), rejected 26; quality 1.000; stage 47.3ms, peak overlap 8
+  validate         pass 1: all 4 check(s) passed
+  assemble         assembled DOC-CS201-organised-course-4f12bcb7d9 (8 section(s)); drift findings: 0
+
+
+## 4. The work items: both kinds, submissions first
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+stats = parallel.state["swarm_stats"]
+items = parallel.state["swarm_items"]
+
+print(
+    f"{stats['items']} work item(s): {stats['submission_items']} submission "
+    f"+ {stats['unit_items']} unit"
+)
+print("priority weight total:", stats["priority_weight"],
+      f"({PRIORITY_SUBMISSION} per submission, {PRIORITY_UNIT} per unit)")
+print()
+print(f"  {'#':>3}  {'work item':<22} {'kind':<10} {'unit':<5} {'prio':>4}")
+for position, item in enumerate(items, 1):
+    print(f"  {position:>3}  {item['key']:<22} {item['kind']:<10} "
+          f"{item['unit'] or '-':<5} {item['priority']:>4}")
+
+13 work item(s): 8 submission + 5 unit
+priority weight total: 21 (2 per submission, 1 per unit)
+
+    #  work item              kind       unit  prio
+    1  submission:DS-A1-S001  submission 1        2
+    2  submission:DS-A1-S002  submission 1        2
+    3  submission:DS-A1-S003  submission 1        2
+    4  submission:DS-A1-S004  submission 1        2
+    5  submission:DS-A2-S005  submission 3        2
+    6  submission:DS-A2-S006  submission 3        2
+    7  submission:DS-A3-S007  submission 5        2
+    8  submission:DS-A3-S008  submission 5        2
+    9  unit:1                 unit       1        1
+   10  unit:2                 unit       2        1
+   11  unit:3                 unit       3        1
+   12  unit:4                 unit       4        1
+   13  unit:5                 unit       5        1
+
+
+## 5. Three candidates per item, and one winner
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+log = parallel.state["swarm_merge_log"]
+
+
+def rows_for(key):
+    # Every merge-log record for one work item, in declared strategy order.
+    return sorted((r for r in log if r["key"] == key), key=lambda r: r["strategy"])
+
+
+sub_key = next(r["key"] for r in log if r["kind"] == KIND_SUBMISSION)
+unit_key = next(r["key"] for r in log if r["kind"] == KIND_UNIT)
+
+print(sub_key + ":")
+print(f"  {'strategy':<10} {'awarded':>8} {'max':>6} {'align':>6}  violated"
+      f"{'':<30} selected")
+for record in rows_for(sub_key):
+    print(f"  {record['strategy']:<10} {record['awarded_marks']:>8.2f} "
+          f"{record['max_marks']:>6.1f} {record['alignment']:>6.2f}  "
+          f"{', '.join(record['violated']) or '-':<30} "
+          f"{'<== selected' if record['selected'] else ''}")
+print()
+print(unit_key + ":")
+print(f"  {'strategy':<10} {'align':>6}  violated{'':<31} selected")
+for record in rows_for(unit_key):
+    print(f"  {record['strategy']:<10} {record['alignment']:>6.2f}  "
+          f"{', '.join(record['violated']) or '-':<31} "
+          f"{'<== selected' if record['selected'] else ''}")
+
+submission:DS-A1-S001:
+  strategy    awarded    max  align  violated                               selected
+  generous      17.48   20.0   1.00  -                              
+  sparse        15.89   20.0   0.20  similarity_attached, criteria_complete 
+  strict        15.89   20.0   1.00  -                              <== selected
+
+unit:1:
+  strategy    align  violated                                selected
+  complete     1.00  -                               <== selected
+  outline      0.20  assignments_in_unit, submissions_in_unit 
+  overclaimed   0.20  assignments_in_unit, no_overclaim
+
+
+### The nicest output loses
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+nicest = max(rows_for(sub_key), key=lambda r: r["awarded_marks"])
+winner = next(r for r in rows_for(sub_key) if r["selected"])
+
+print("the nicest (highest-marked) candidate:")
+print(f"  {nicest['strategy']:<10} awarded {nicest['awarded_marks']:>6.2f} / "
+      f"{nicest['max_marks']:.1f}  alignment {nicest['alignment']:.2f}  "
+      f"selected={nicest['selected']}")
+print("the selected candidate:")
+print(f"  {winner['strategy']:<10} awarded {winner['awarded_marks']:>6.2f} / "
+      f"{winner['max_marks']:.1f}  alignment {winner['alignment']:.2f}  "
+      f"selected={winner['selected']}")
+print()
+print("higher marks were rejected   :", nicest["awarded_marks"] > winner["awarded_marks"])
+print("more aligned was selected    :", winner["alignment"] >= nicest["alignment"])
+
+all_winners = {s["key"]: s["strategy"] for s in parallel.state["swarm_selected"]}
+print("winners over all work items  :", all_winners)
+
+the nicest (highest-marked) candidate:
+  generous   awarded  17.48 / 20.0  alignment 1.00  selected=False
+the selected candidate:
+  strict     awarded  15.89 / 20.0  alignment 1.00  selected=True
+
+higher marks were rejected   : True
+more aligned was selected    : True
+winners over all work items  : {'submission:DS-A1-S001': 'strict', 'submission:DS-A1-S002': 'strict', 'submission:DS-A1-S003': 'strict', 'submission:DS-A1-S004': 'strict', 'submission:DS-A2-S005': 'strict', 'submission:DS-A2-S006': 'strict', 'submission:DS-A3-S007': 'strict', 'submission:DS-A3-S008': 'strict', 'unit:1': 'complete', 'unit:2': 'complete', 'unit:3': 'complete', 'unit:4': 'complete', 'unit:5': 'complete'}
+
+
+## 6. The merge recomputes alignment; it never trusts a candidate
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+disagreements = [r for r in log if r["self_reported_alignment"] != r["alignment"]]
+print(f"{len(log)} merge decision(s), one per candidate")
+print("self-reported != recomputed :", len(disagreements))
+print()
+print("every decision carries its screen, so a rejection is explainable:")
+obligations = {
+    KIND_SUBMISSION: SUBMISSION_OBLIGATIONS,
+    KIND_UNIT: UNIT_OBLIGATIONS,
+}
+for record in log[:6]:
+    total = len(obligations[record["kind"]])
+    print(f"  {record['key']:<22} {record['strategy']:<10} "
+          f"{len(record['satisfied'])}/{total} obligations met  "
+          f"alignment {record['alignment']}")
+print()
+print("selected candidates:", len(parallel.state["swarm_selected"]),
+      "rejected candidates:", stats["rejected"])
+
+39 merge decision(s), one per candidate
+self-reported != recomputed : 0
+
+every decision carries its screen, so a rejection is explainable:
+  submission:DS-A1-S001  strict     5/5 obligations met  alignment 1.0
+  submission:DS-A1-S001  generous   5/5 obligations met  alignment 1.0
+  submission:DS-A1-S001  sparse     3/5 obligations met  alignment 0.2
+  submission:DS-A1-S002  strict     5/5 obligations met  alignment 1.0
+  submission:DS-A1-S002  generous   5/5 obligations met  alignment 1.0
+  submission:DS-A1-S002  sparse     3/5 obligations met  alignment 0.2
+
+selected candidates: 13 rejected candidates: 26
+
+
+## 7. Quality, and the priority weighting
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+quality = parallel.state["swarm_quality"]
+by_kind = parallel.state["swarm_quality_by_kind"]
+
+print("quality                     :", quality)
+print("by kind                     :", by_kind)
+print()
+w_sub = stats["submission_items"] * PRIORITY_SUBMISSION
+w_unit = stats["unit_items"] * PRIORITY_UNIT
+expected = round(
+    (by_kind[KIND_SUBMISSION] * w_sub + by_kind[KIND_UNIT] * w_unit)
+    / (w_sub + w_unit),
+    6,
+)
+print(f"weights                     : submission {w_sub} : unit {w_unit}")
+print("priority-weighted mean      :", expected)
+print("agrees with the state value :", abs(quality - expected) < 1e-9)
+
+quality                     : 1.0
+by kind                     : {'submission': 1.0, 'unit': 1.0}
+
+weights                     : submission 16 : unit 5
+priority-weighted mean      : 1.0
+agrees with the state value : True
+
+
+## 8. The sequential baseline, and the measured comparison
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+sequential = run_swarm(
+    course_code="CS201",
+    run_id="sequential",
+    root=runs_root,
+    output_dir=runs_root / "sequential",
+    parallel=False,
+)
+
+print("summary :", sequential.summary())
+print("nodes   :", " -> ".join(sequential.nodes_ran()))
+print("status  :", sequential.status.value)
+
+summary : run=sequential status=draft nodes=7 attempts=1 gate=awaiting_faculty
+nodes   : ingest -> plan -> workers -> swarm_sequential -> swarm_merge -> validate -> assemble
+status  : draft
+
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+par_timing = parallel.state["swarm_timing"]
+seq_timing = sequential.state["swarm_timing"]
+
+print(f"  {'mode':<12} {'tasks':>6} {'stage_ms':>10} {'span_ms':>10} "
+      f"{'sum_task_ms':>12} {'overlap':>8} {'quality':>8}")
+for timing, run in ((par_timing, parallel), (seq_timing, sequential)):
+    print(f"  {timing['mode']:<12} {timing['tasks']:>6} {timing['stage_ms']:>10.3f} "
+          f"{timing['span_ms']:>10.3f} {timing['sum_task_ms']:>12.3f} "
+          f"{timing['max_overlap']:>8} {run.state['swarm_quality']:>8}")
+print()
+print(f"stage speedup            : "
+      f"{seq_timing['stage_ms'] / par_timing['stage_ms']:.2f}x")
+print("parallel below sequential:", par_timing["stage_ms"] < seq_timing["stage_ms"])
+print(f"peak overlap, parallel   : {par_timing['max_overlap']}  "
+      "(>= 2 means the workers really overlapped)")
+print(f"peak overlap, sequential : {seq_timing['max_overlap']}  "
+      "(one node, no pool)")
+print(f"inside the pool width    : "
+      f"{par_timing['max_overlap'] <= SWARM_MAX_CONCURRENCY}  "
+      f"(<={SWARM_MAX_CONCURRENCY}; structural, no stopwatch needed)")
+print()
+print("quality, parallel        :", parallel.state["swarm_quality"])
+print("quality, sequential      :", sequential.state["swarm_quality"])
+print("identical winners        :",
+      [s["strategy"] for s in parallel.state["swarm_selected"]]
+      == [s["strategy"] for s in sequential.state["swarm_selected"]])
+
+  mode          tasks   stage_ms    span_ms  sum_task_ms  overlap  quality
+  parallel         39     47.340     42.719      276.615        8      1.0
+  sequential       39     69.935     69.907       69.230        1      1.0
+
+stage speedup            : 1.48x
+parallel below sequential: True
+peak overlap, parallel   : 8  (>= 2 means the workers really overlapped)
+peak overlap, sequential : 1  (one node, no pool)
+inside the pool width    : True  (<=8; structural, no stopwatch needed)
+
+quality, parallel        : 1.0
+quality, sequential      : 1.0
+identical winners        : True
+
+
+### Why the parallel pass wins at all, honestly
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+intervals = parallel.state["swarm_intervals"]
+busy_ms = sum((i["end"] - i["start"]) * 1000.0 for i in intervals)
+
+print(f"worker intervals recorded : {len(intervals)}")
+print(f"sum of worker time        : {busy_ms:.3f}ms")
+print(f"wall-clock span, parallel : {par_timing['span_ms']:.3f}ms")
+print(f"wall-clock span, sequential: {seq_timing['span_ms']:.3f}ms")
+print(f"span speedup              : "
+      f"{seq_timing['span_ms'] / par_timing['span_ms']:.2f}x")
+print()
+print("evidence writes per pass  :", stats["candidates"], "(one per candidate)")
+
+worker intervals recorded : 39
+sum of worker time        : 276.615ms
+wall-clock span, parallel : 42.719ms
+wall-clock span, sequential: 69.907ms
+span speedup              : 1.64x
+
+evidence writes per pass  : 39 (one per candidate)
+
+
+## 9. Every candidate leaves a durable evidence record
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+import json
+
+swarm_dir = Path(parallel.context.output_dir) / "swarm"
+records = sorted(swarm_dir.glob("a00__*.json"))
+
+print(f"{len(records)} evidence record(s) written for this pass")
+print()
+first = json.loads(records[0].read_text(encoding="utf-8"))
+print(records[0].name)
+print("  key                :", first["key"])
+print("  strategy           :", first["strategy"])
+print("  attempt            :", first["attempt"])
+print("  self-reported      :", first["self_reported_alignment"])
+print("  bytes on disk      :", records[0].stat().st_size)
+print("  content keys       :", ", ".join(sorted(first["content"])))
+print("  plan scope         :", json.dumps(first["provenance"]["plan_scope"]))
+
+39 evidence record(s) written for this pass
+
+a00__submission_DS-A1-S001__generous.json
+  key                : submission:DS-A1-S001
+  strategy           : generous
+  attempt            : 0
+  self-reported      : 1.0
+  bytes on disk      : 1861
+  content keys       : assignment_id, awarded_marks, criterion_ids, criterion_marks, expected_late, feedback, late, max_marks, similarity_against, similarity_flagged, similarity_score, student_name, submission_id
+  plan scope         : {"assignment_ids": ["ASG-01", "ASG-02", "ASG-03"], "units": ["1", "2", "3", "4", "5"]}
+
+
+## 10. The gate, the approval, and what is published
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+request = parallel.gate_request
+print("course        :", request.course_code, request.course_name)
+print("attempt       :", request.attempt)
+print("validation    :", "passed" if request.validation.passed else "FAILED",
+      f"({len(request.validation.checks_run)} check(s))")
+print("grades        :", len(request.draft_grades))
+print("all still draft:", {g.status for g in request.draft_grades} == {"draft"})
+print("approved by   :", {g.approved_by for g in request.draft_grades} or "(nobody yet)")
+print()
+selected = {s["key"]: s for s in parallel.state["swarm_selected"]}
+print(f"  {'submission':<14} {'strategy':<10} {'awarded':>8} {'max':>6}  late  sim")
+for grade in request.draft_grades:
+    chosen = selected[f"submission:{grade.submission_id}"]
+    sim = "n/a" if grade.similarity_score is None else f"{grade.similarity_score:.2f}"
+    print(f"  {grade.submission_id:<14} {chosen['strategy']:<10} "
+          f"{grade.awarded_marks:>8.2f} {grade.max_marks:>6.1f}  "
+          f"{'yes' if grade.late else 'no':<4} {sim}")
+print()
+print("unit coverage after the merge:", len(parallel.state["unit_coverage"]), "unit(s)")
+for record in parallel.state["unit_coverage"]:
+    print(f"  unit {record['unit']}: {record['note_count']} note(s), "
+          f"{len(record['assignment_ids'])} assignment(s), "
+          f"{len(record['submission_ids'])} submission(s), "
+          f"strategy {record['strategy']}")
+
+course        : CS201 Data Structures
+attempt       : 1
+validation    : passed (4 check(s))
+grades        : 8
+all still draft: True
+approved by   : {''}
+
+  submission     strategy    awarded    max  late  sim
+  DS-A1-S001     strict        15.89   20.0  no   1.00
+  DS-A1-S002     strict         9.33   20.0  no   0.01
+  DS-A1-S003     strict        18.88   20.0  no   1.00
+  DS-A1-S004     strict        11.77   20.0  no   0.00
+  DS-A2-S005     strict         8.23   20.0  no   0.00
+  DS-A2-S006     strict        15.56   20.0  no   0.00
+  DS-A3-S007     strict        11.01   25.0  no   0.02
+  DS-A3-S008     strict        17.13   25.0  yes  0.02
+
+unit coverage after the merge: 5 unit(s)
+  unit 1: 2 note(s), 1 assignment(s), 4 submission(s), strategy complete
+  unit 2: 1 note(s), 0 assignment(s), 0 submission(s), strategy complete
+  unit 3: 2 note(s), 1 assignment(s), 2 submission(s), strategy complete
+  unit 4: 1 note(s), 0 assignment(s), 0 submission(s), strategy complete
+  unit 5: 2 note(s), 1 assignment(s), 2 submission(s), strategy complete
+
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+from course_organizer.graph import DECISION_APPROVE, resume_swarm
+
+before = parallel.nodes_ran()
+approved = resume_swarm("parallel", DECISION_APPROVE, root=runs_root)
+after = approved.nodes_ran()
+
+print("summary before resume :", parallel.summary())
+print("summary after resume  :", approved.summary())
+print("nodes executed on resume:", after[len(before):])
+print("swarm nodes re-ran    :", any(n.startswith("swarm_") for n in after[len(before):]))
+print("workers re-ran        :", "workers" in after[len(before):])
+print("published             :", approved.published)
+print()
+path = Path(approved.state["published_path"])
+body = path.read_text(encoding="utf-8")
+print("published file        :", path.name, f"({len(body)} chars)")
+print("approval marker       :", "## Approval Recorded" in body)
+print("names the authority   :", "course_faculty" in body)
+print("pure ASCII            :", all(ord(ch) < 128 for ch in body))
+
+summary before resume : run=parallel status=draft nodes=7 attempts=1 gate=awaiting_faculty
+summary after resume  : run=parallel status=published nodes=9 attempts=1 published=C:\Users\ummea\AppData\Local\Temp\lab08_nb_3oowbxs3\runs\parallel\DOC-CS201-organised-course-4f12bcb7d9.md
+nodes executed on resume: ['gate', 'publish']
+swarm nodes re-ran    : False
+workers re-ran        : False
+published             : True
+
+published file        : DOC-CS201-organised-course-4f12bcb7d9.md (4713 chars)
+approval marker       : True
+names the authority   : True
+pure ASCII            : True
+
+
+## 11. The bound still stops a non-converging swarm
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+injected = run_swarm(
+    course_code="CS201",
+    run_id="exhaustion",
+    root=runs_root,
+    output_dir=runs_root / "exhaustion",
+    parallel=True,
+    fail_until_attempt=MAX_ATTEMPTS + 10,
+)
+esc = injected.state["escalation"]
+
+print("summary        :", injected.summary())
+print("nodes          :", " -> ".join(injected.nodes_ran()))
+print("attempts       :", injected.attempts_made(), "of", MAX_ATTEMPTS)
+print("swarm_dispatch ran", injected.nodes_ran().count("swarm_dispatch"), "time(s)")
+print("swarm_merge ran", injected.nodes_ran().count("swarm_merge"), "time(s)")
+print("reason         :", esc.reason)
+print("raised by      :", esc.raised_by, "->", esc.escalated_to)
+print("failing        :", ", ".join(esc.failing))
+print("draft kept     :", len(esc.pending_draft.get("draft_grades", [])), "grade(s)")
+print()
+print("diagnosis:")
+print(esc.diagnosis)
+
+escalate escalated to course_faculty: retry_budget_exhausted after 3 attempt(s)
+
+summary        : run=exhaustion status=escalated nodes=15 attempts=3 escalated=retry_budget_exhausted
+nodes          : ingest -> plan -> workers -> swarm_dispatch -> swarm_merge -> validate -> workers -> swarm_dispatch -> swarm_merge -> validate -> workers -> swarm_dispatch -> swarm_merge -> validate -> escalate
+attempts       : 3 of 3
+swarm_dispatch ran 3 time(s)
+swarm_merge ran 3 time(s)
+reason         : retry_budget_exhausted
+raised by      : validate -> course_faculty
+failing        : draft_grade_within_rubric_maximum, similarity_score_attached
+draft kept     : 8 grade(s)
+
+diagnosis:
+Validation still failing after 3 of 3 permitted attempt(s); the run stopped rather than retrying forever. Attempt 3 validation failed 2 of 4 check(s): draft_grade_within_rubric_maximum, similarity_score_attached. draft_grade_within_rubric_maximum: DS-A1-S001 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S002 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S003 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A1-S004 was awarded 22 against a rubric maximum of 20 for ASG-01; DS-A2-S005 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A2-S006 was awarded 22 against a rubric maximum of 20 for ASG-02; DS-A3-S007 was awarded 27.5 against a rubric maximum of 25 for ASG-03; DS-A3-S008 was awarded 27.5 against a rubric maximum of 25 for ASG-03. similarity_score_attached: 8 of 8 submission(s) have no similarity score: DS-A1-S001, DS-A1-S002, DS-A1-S003, DS-A1-S004, DS-A2-S005, DS-A2-S006, DS-A3-S007, DS-A3-S008. To clear this: re-score the affected submission(s) against the faculty-approved rubric, or raise the rubric maximum itself -- the second needs a faculty decision recorded first; run the similarity step for the submission(s) with no score; an absent score is not a zero score. The draft below is the version that failed, so the failing rows can be corrected without re-running.
+
+
+### The swarm does not mask an injected defect
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+print("similarity scores attached  :", len(injected.state["similarity_scores"]))
+print("selected candidates' score :",
+      {s["content"].get("similarity_score")
+       for s in injected.state["swarm_selected"]
+       if s["kind"] == KIND_SUBMISSION})
+print("validation passed           :", injected.state["validation"].passed)
+print("failing checks              :", injected.state["validation"].failing)
+print()
+print("quality of the injected pass:", injected.state["swarm_quality"])
+print("best candidate for one item :")
+record = next(r for r in injected.state["swarm_merge_log"]
+              if r["kind"] == KIND_SUBMISSION and r["selected"])
+print(f"  {record['key']} {record['strategy']}: alignment {record['alignment']}, "
+      f"violated {', '.join(record['violated'])}")
+
+similarity scores attached  : 0
+selected candidates' score : {None}
+validation passed           : False
+failing checks              : ['draft_grade_within_rubric_maximum', 'similarity_score_attached']
+
+quality of the injected pass: 0.390476
+best candidate for one item :
+  submission:DS-A1-S001 strict: alignment 0.2, violated within_rubric_maximum, similarity_attached
+
+
+## 12. The whole lab, self-checking
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+result = lab08.run_scenarios(work / "full")
+
+print("pass_all :", result.pass_all)
+print()
+for number, check in enumerate(result.checks, 1):
+    mark = "PASS" if check["passed"] else "FAIL"
+    print(f"[{mark}] {number:>2}. {check['name']}")
+    print(f"        {check['detail']}")
+print()
+print("=" * 72)
+print(f"OVERALL: {'PASS' if result.pass_all else 'FAIL'} "
+      f"({sum(1 for c in result.checks if c['passed'])}/{len(result.checks)} checks)")
+
+escalate escalated to course_faculty: retry_budget_exhausted after 3 attempt(s)
+
+pass_all : True
+
+[PASS]  1. the fan-out node and the merge node are compiled (parallel)
+        compiled swarm nodes: swarm_dispatch, swarm_merge, swarm_worker
+[PASS]  2. swarm_dispatch --Send--> swarm_worker is a conditional edge
+        read from the compiled graph, not a declared constant
+[PASS]  3. swarm_worker --> swarm_merge is the fan-in edge
+        all workers join once, after the last one finishes
+[PASS]  4. the sequential graph has a loop node and no Send worker
+        compiled swarm nodes: swarm_merge, swarm_sequential
+[PASS]  5. Lab 7's back-edge survives under the swarm
+        a retry re-runs the swarm stage as well, which is the point
+[PASS]  6. both work-item kinds are fanned out
+        8 submission item(s) + 5 unit item(s) = 13
+[PASS]  7. submission work is dispatched before unit work (priority)
+        submission priority=2, unit priority=1, weights 21
+[PASS]  8. every work item is processed and gets a selected candidate
+        13 selected of 13 item(s)
+[PASS]  9. each item is best-of-N: three candidates, losers logged
+        39 candidate(s), 26 rejected
+[PASS] 10. every candidate is logged with its alignment and its screen
+        39 merge decision(s), each with satisfied/violated
+[PASS] 11. merge selects the maximum plan-alignment candidate per item
+        selected alignment equals the max over the item's candidates
+[PASS] 12. the 'nicest' (highest-marked) candidate is rejected
+        submission:DS-A1-S001: generous awarded 17.48 rejected; strict awarded 15.89 selected at alignment 1.0
+[PASS] 13. parallel and sequential select identical candidates
+        13 item(s), same winner in both modes
+[PASS] 14. parallel quality matches or beats sequential quality
+        parallel=1.0 sequential=1.0
+[PASS] 15. quality is priority-weighted (submission 2 : unit 1)
+        quality=1.0, by kind={'submission': 1.0, 'unit': 1.0}, weights 16:5
+[PASS] 16. the parallel pass is lower wall-clock than the sequential pass
+        parallel stage=44.31ms < sequential stage=64.622ms (1.46x)
+[PASS] 17. the fan-out really ran concurrently
+        parallel peak overlap=8, sequential peak overlap=1
+[PASS] 18. the fan-out stayed inside the measured pool width
+        peak overlap=8 <= SWARM_MAX_CONCURRENCY=8; an unbounded pool measured between 0.71x and 1.58x of sequential depending on the process, so the bound is what makes the check above hold
+[PASS] 19. the fan-out did not drop any work
+        39 worker interval(s) over 39.627ms of concurrent span
+[PASS] 20. the parallel run stops at the human gate with doc 2.7 passing
+        status=draft, 4 check(s), 8 merged grade(s)
+[PASS] 21. resuming does not re-run the swarm or the pre-gate nodes
+        after resume, nodes executed: gate, publish
+[PASS] 22. an approved run publishes the merged grades
+        status=published, 8 grade(s) approved, 4713 ASCII char(s) published
+[PASS] 23. the MAX_ATTEMPTS bound still stops a non-converging swarm
+        stopped after 3 of 3 permitted attempt(s)
+[PASS] 24. the swarm ran on every retry, not just the first
+        swarm_dispatch ran 3 time(s), swarm_merge 3 time(s) for 3 attempts
+[PASS] 25. the bound escalates with a diagnosis and the failing draft
+        reason=retry_budget_exhausted, 2 failing check(s): draft_grade_within_rubric_maximum, similarity_score_attached
+[PASS] 26. every candidate's durable evidence record is on disk
+        39 record(s) under parallel/swarm, first parses
+[PASS] 27. the exhaustion run logged every attempt's candidates
+        117 record(s) across 3 attempt(s)
+
+========================================================================
+OVERALL: PASS (27/27 checks)
+
+
+### The same lab, as a command
+
+------------------------------------------------------------------------------
+In [21]:
+------------------------------------------------------------------------------
+import os
+import subprocess
+
+proc = subprocess.run(
+    [sys.executable, "-m", "course_organizer.labs.lab08_parallel_swarm"],
+    capture_output=True,
+    text=True,
+    timeout=600,
+    env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+)
+final = [line for line in proc.stdout.splitlines() if line.strip()]
+print("last stdout line :", final[-1])
+print("exit code        :", proc.returncode)
+assert proc.returncode == 0, proc.stdout + proc.stderr
+
+last stdout line : ==============================================================================
+exit code        : 0
+
+
+### Cleaning up
+
+------------------------------------------------------------------------------
+In [22]:
+------------------------------------------------------------------------------
+import shutil
+
+before = sum(1 for _ in work.rglob("*"))
+shutil.rmtree(work, ignore_errors=True)
+print(f"{before} path(s) under {work.name}/ removed; exists now: {work.exists()}")
+
+541 path(s) under lab08_nb_3oowbxs3/ removed; exists now: False
+
+
+## 13. Requirement coverage
+
+## 14. Reproducing this
+
+==============================================================================
+end of notebook - 44 cells, 0 errors
+==============================================================================

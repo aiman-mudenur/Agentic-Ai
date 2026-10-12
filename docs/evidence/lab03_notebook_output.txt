@@ -1,0 +1,1505 @@
+Evidence - lab03_skill_creation.ipynb
+==========================
+
+Notebook : notebooks/lab03_skill_creation.ipynb
+Command  : jupyter nbconvert --to notebook --execute --inplace
+Summary  : 63 cells, 36 code, 36 executed, 0 errors
+
+==============================================================================
+
+
+# Lab 3 - Skill Creation
+
+## 1. Setup
+
+------------------------------------------------------------------------------
+In [1]:
+------------------------------------------------------------------------------
+import ast
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+# Keep the notebook output clean and deterministic. Logging is available via
+# logging_setup.configure() when you want to watch the skill ledger fire.
+logging.disable(logging.CRITICAL)
+
+# Locate the package from the import, not from `__file__` -- there is no
+# `__file__` in a notebook, and cwd is whatever the kernel happened to start in.
+import course_organizer
+from course_organizer import HUMAN_AUTHORITY
+from course_organizer.labs import lab03_skill_creation as lab03
+from course_organizer.labs.lab03_skill_creation import (
+    CASES,
+    DOC_PSEUDOCODE,
+    TEMPLATE_SPECS,
+    CaseSpec,
+    SkillAgent,
+    SkillErrorLookup,
+)
+from course_organizer.skills import (
+    DEFERRED_KINDS,
+    MISSING,
+    OBLIGATION_KINDS,
+    SECTIONS,
+    SKILL_NAMES,
+    VOLATILE_FACT_KEYS,
+    Document,
+    DocumentStatus,
+    LockedPlan,
+    PlanInputs,
+    TemplateSpec,
+    WorkspaceResult,
+    build_default_skill_registry,
+    expand,
+    resolve_fact,
+    stable_facts,
+)
+from course_organizer.skills.base import SkillError
+from course_organizer.tools import get_seed_store
+
+ROOT = Path(course_organizer.__file__).resolve().parents[2]
+SKILLS_DIR = ROOT / "src" / "course_organizer" / "skills"
+
+print("package  :", ROOT)
+print("skills   :", SKILLS_DIR)
+print("skills   :", SKILL_NAMES)
+print("cases    :", [c.label for c in CASES])
+print("templates:", sorted(TEMPLATE_SPECS))
+print("cwd      :", Path.cwd())
+
+package  : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer
+skills   : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer\skills
+skills   : ('plan', 'format_organised')
+cases    : ['cs-broad', 'cs-narrow', 'db-broad', 'db-narrow']
+templates: ['coordinator-brief', 'faculty-pack', 'pipeline-json']
+cwd      : C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\notebooks
+
+
+------------------------------------------------------------------------------
+In [2]:
+------------------------------------------------------------------------------
+print(DOC_PSEUDOCODE)
+
+skill plan(inputs) -> Plan:           return expand(inputs).lock()
+skill format_organised(result, template) -> Document
+
+# doc 2.10 Lab 3, verbatim. Every step below maps to one call in this module:
+#   expand()        -> plan_skill.handler, first half of the pseudocode
+#   .lock()         -> plan_skill.handler, second half
+#   format_organised() -> format_organised handler
+
+
+## 2. The two skills, as they declare themselves
+
+------------------------------------------------------------------------------
+In [3]:
+------------------------------------------------------------------------------
+registry = build_default_skill_registry(run_id="notebook-lab03")
+
+for name in SKILL_NAMES:
+    print(registry.get(name).describe())
+    print()
+
+skill 'plan'
+    does      : expand parsed inputs into checkable obligations and lock them into an immutable blueprint (doc 2.10 Lab 3: expand(inputs).lock())
+    input     : PlanInputs(course_code: str, course_name: str, units: tuple[str, ...], assignment_ids: tuple[str, ...], include_milestones: bool, steps: tuple[LabStep, ...], verified_facts: Mapping[str, Any], notes: tuple[str, ...], as_of: str | None, human_authority: str)
+    output    : LockedPlan
+    tags      : planning, blueprint, phase-a
+    reusable  : yes
+
+skill 'format_organised'
+    does      : render a produced result against a template spec into a Document, annotating any deviation from the locked plan (doc 2.10 Lab 3)
+    input     : FormatInputs(result: WorkspaceResult, plan: LockedPlan, template: TemplateSpec)
+    output    : Document
+    tags      : assembly, rendering, phase-a
+    reusable  : yes
+
+
+------------------------------------------------------------------------------
+In [4]:
+------------------------------------------------------------------------------
+# The `case_agnostic` flag is a claim, so it is verified rather than trusted.
+# Cell 9 is the proof; this cell just shows the flag is declared at all.
+print("declared case-agnostic:")
+for name in SKILL_NAMES:
+    print(f"  {name:18s} {registry.get(name).case_agnostic}")
+
+declared case-agnostic:
+  plan               True
+  format_organised   True
+
+
+## 3. The acceptance criterion, stated before the code
+
+------------------------------------------------------------------------------
+In [5]:
+------------------------------------------------------------------------------
+# Not the proof - the falsifiable statement, so the proof means something.
+print("Acceptance criterion (doc 2.10 Lab 3):")
+print('  "The same skill works for two different cases without code changes."')
+print()
+print("Which decomposes into:")
+print("  1. the set of skills invoked is exactly SKILL_NAMES")
+print("  2. the four cases produce four different locked plans")
+print("  3. src/course_organizer/skills/ contains no course identifier")
+print("  4. a course code never seen before runs with no code change")
+print()
+print("A skill with a hard-coded 'if course == CS201' fails 2, 3 and 4 while")
+print("passing every 'did it raise?' test. That is why the criterion is split.")
+
+Acceptance criterion (doc 2.10 Lab 3):
+  "The same skill works for two different cases without code changes."
+
+Which decomposes into:
+  1. the set of skills invoked is exactly SKILL_NAMES
+  2. the four cases produce four different locked plans
+  3. src/course_organizer/skills/ contains no course identifier
+  4. a course code never seen before runs with no code change
+
+A skill with a hard-coded 'if course == CS201' fails 2, 3 and 4 while
+passing every 'did it raise?' test. That is why the criterion is split.
+
+
+## 4. `plan(inputs) -> Plan`: `expand(inputs).lock()`
+
+------------------------------------------------------------------------------
+In [6]:
+------------------------------------------------------------------------------
+inputs = PlanInputs(
+    course_code="CS201",
+    course_name="Data Structures",
+    units=("1", "2"),
+    assignment_ids=("ASG-01",),
+    include_milestones=True,
+    verified_facts={
+        "course_code": "CS201",
+        "unit_count": 2,
+        "total_available_marks": 40.0,
+        "marks_by_assignment": {"ASG-01": 40.0},
+        "computed_at": "2026-10-15T09:00:00+00:00",
+    },
+    notes=("units narrowed to 1, 2 without asking the requester",),
+    as_of="2026-10-15",
+)
+
+draft = expand(inputs)
+print(f"expand(inputs) -> {type(draft).__name__}")
+print(f"  obligations  : {len(draft.obligations)}")
+print(f"  obligation kinds: {sorted({o.kind for o in draft.obligations})}")
+print()
+print("Still a draft, so still editable:")
+draft.add_obligation(
+    __import__("course_organizer").skills.Obligation(
+        obligation_id="OBL-cover_unit/9",
+        kind="cover_unit",
+        subject="9",
+        statement="added before locking",
+    )
+)
+print(f"  after add    : {len(draft.obligations)} obligations")
+
+expand(inputs) -> PlanDraft
+  obligations  : 5
+  obligation kinds: ['cover_unit', 'distribute_assignment', 'ground_facts', 'track_milestones']
+
+Still a draft, so still editable:
+  after add    : 6 obligations
+
+
+### 4a. `.lock()` - and the lock is real
+
+------------------------------------------------------------------------------
+In [7]:
+------------------------------------------------------------------------------
+plan = draft.lock()
+print(f"draft.lock() -> {type(plan).__name__}")
+print()
+print(plan.outline())
+
+draft.lock() -> LockedPlan
+
+LOCKED PLAN  CS201 (Data Structures)
+  units        : 1, 2
+  assignments  : ASG-01
+  milestones   : in scope
+  obligations  : 6
+  approver     : course_faculty
+  plan sha256  : 42f155b14d9934bc6e18aee7b73f8713b6b1c0fb1d31d9edb6c5e53c901b76a5
+
+  OBLIGATION                        KIND                 
+-----------------------------------------------------------
+  OBL-cover_unit/1                  cover_unit             cover unit 1 with notes from the materials store
+  OBL-cover_unit/2                  cover_unit             cover unit 2 with notes from the materials store
+  OBL-cover_unit/9                  cover_unit             added before locking
+  OBL-distribute_assignment/ASG-01  distribute_assignment  distribute ASG-01 with its rubric, marks computed by the tool layer
+  OBL-ground_facts/all              ground_facts           every reported number is one a tool verified for this plan, never one supplied in the prompt
+  OBL-track_milestones/course       track_milestones       track project milestones for every project group
+
+
+------------------------------------------------------------------------------
+In [8]:
+------------------------------------------------------------------------------
+# The lock is enforced by the type, not by convention.
+import pydantic
+
+for label, attempt in (
+    ("rebind plan.course_code", lambda: setattr(plan, "course_code", "HACKED")),
+    ("append to plan.obligations", lambda: plan.obligations.append("x")),
+    ("append to plan.units", lambda: plan.units.append("x")),
+):
+    try:
+        attempt()
+        print(f"  {label:28s} SUCCEEDED  <-- would be a bug")
+    except (pydantic.ValidationError, AttributeError) as exc:
+        kind = type(exc).__name__
+        print(f"  {label:28s} blocked ({kind})")
+
+  rebind plan.course_code      blocked (ValidationError)
+  append to plan.obligations   blocked (AttributeError)
+  append to plan.units         blocked (AttributeError)
+
+
+------------------------------------------------------------------------------
+In [9]:
+------------------------------------------------------------------------------
+# `frozen=True` alone is not enough. Pydantic blocks rebinding but leaves list
+# contents mutable, so every collection on LockedPlan is a `tuple`, which has no
+# mutating methods at all. Worth showing, because the two look identical from
+# the class body and only one of them works.
+from pydantic import BaseModel, ConfigDict
+
+class FrozenButListy(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    items: list = []
+
+probe = FrozenButListy(items=[1, 2])
+try:
+    probe.items.append(3)
+    print("frozen=True with a list field: append SUCCEEDED - the trap")
+except AttributeError:
+    print("frozen=True with a tuple field: append blocked (this is what we do)")
+
+print()
+print("LockedPlan field types:")
+for name, field in LockedPlan.model_fields.items():
+    print(f"  {name:20s} {str(field.annotation):40s} {type(field.default).__name__}")
+
+frozen=True with a list field: append SUCCEEDED - the trap
+
+LockedPlan field types:
+  course_code          <class 'str'>                            PydanticUndefinedType
+  course_name          <class 'str'>                            PydanticUndefinedType
+  units                tuple[str, ...]                          PydanticUndefinedType
+  assignment_ids       tuple[str, ...]                          tuple
+  include_milestones   <class 'bool'>                           bool
+  obligations          tuple[course_organizer.skills.plan_skill.Obligation, ...] tuple
+  verified_facts       collections.abc.Mapping[str, typing.Any] PydanticUndefinedType
+  notes                tuple[str, ...]                          tuple
+  as_of                str | None                               NoneType
+  human_authority      <class 'str'>                            str
+  plan_sha256          <class 'str'>                            PydanticUndefinedType
+  obligation_count     <class 'int'>                            PydanticUndefinedType
+  locked_at            <class 'str'>                            str
+
+
+### 4b. Locking is a copy, not a handover
+
+------------------------------------------------------------------------------
+In [10]:
+------------------------------------------------------------------------------
+second_draft = expand(inputs)
+locked = second_draft.lock()
+hash_before = locked.plan_sha256
+
+second_draft.units = second_draft.units + ("9",)
+second_draft.course_code = "HACKED"
+second_draft.verified_facts["total_available_marks"] = 999.0
+
+print("the draft changed after locking:")
+print(f"  draft units    : {second_draft.units}")
+print(f"  draft course   : {second_draft.course_code}")
+print()
+print("the locked plan did not:")
+print(f"  plan units     : {locked.units}")
+print(f"  plan course    : {locked.course_code}")
+print(f"  plan total     : {locked.verified_facts['total_available_marks']}")
+print(f"  hash unchanged : {locked.plan_sha256 == hash_before}")
+
+the draft changed after locking:
+  draft units    : ('1', '2', '9')
+  draft course   : HACKED
+
+the locked plan did not:
+  plan units     : ('1', '2')
+  plan course    : CS201
+  plan total     : 40.0
+  hash unchanged : True
+
+
+### 4c. The plan hashes its own content
+
+------------------------------------------------------------------------------
+In [11]:
+------------------------------------------------------------------------------
+print("recorded  :", locked.plan_sha256)
+print("recomputed:", locked.recompute_sha256())
+print("match     :", locked.recompute_sha256() == locked.plan_sha256)
+print()
+print("tampered (units 1, 2 -> 1, 2, 3), integrity check re-run:")
+tampered = LockedPlan.model_construct(
+    **{**locked.model_dump(), "units": ("1", "2", "3")}
+)
+try:
+    tampered.recompute_sha256()
+    print("  no error  <-- would be a bug")
+except SkillError as exc:
+    print(f"  {type(exc).__name__}[{exc.code}]: {exc}")
+
+recorded  : 9beae9c3cb3f4e67451e92315f39a677eba60db433391a85ab58fad4634c06be
+recomputed: 9beae9c3cb3f4e67451e92315f39a677eba60db433391a85ab58fad4634c06be
+match     : True
+
+tampered (units 1, 2 -> 1, 2, 3), integrity check re-run:
+  SkillError[plan_tampered]: locked plan CS201 fails its own integrity check. recorded 9beae9c3cb3f4e67..., recomputed f01a1b0bf016878f...
+
+
+### 4d. Two runs of one input hash the same - which took a filter
+
+------------------------------------------------------------------------------
+In [12]:
+------------------------------------------------------------------------------
+print("VOLATILE_FACT_KEYS:", sorted(VOLATILE_FACT_KEYS))
+print()
+facts = {
+    "course_code": "CS201",
+    "unit_count": 2,
+    "computed_at": "2026-10-15T09:00:00+00:00",
+}
+print("raw facts     :", facts)
+print("stable_facts  :", stable_facts(facts))
+print()
+
+same_plan_twice = expand(inputs).lock().plan_sha256 == expand(inputs).lock().plan_sha256
+print("two lockings of one input agree:", same_plan_twice)
+print("their locked_at differs       :", expand(inputs).lock().locked_at != expand(inputs).lock().locked_at)
+
+VOLATILE_FACT_KEYS: ['call_id', 'computed_at', 'elapsed_ms', 'generated_at', 'run_id', 'timestamp']
+
+raw facts     : {'course_code': 'CS201', 'unit_count': 2, 'computed_at': '2026-10-15T09:00:00+00:00'}
+stable_facts  : {'course_code': 'CS201', 'unit_count': 2}
+
+two lockings of one input agree: True
+their locked_at differs       : False
+
+
+------------------------------------------------------------------------------
+In [13]:
+------------------------------------------------------------------------------
+# Proved the other way round: a different timestamp must not change the hash.
+stamped = inputs.model_copy(
+    update={
+        "verified_facts": {
+            **inputs.verified_facts,
+            "computed_at": "2099-12-31T23:59:59+00:00",
+        }
+    }
+)
+print("with a 73-year-old timestamp:")
+print("  hash unchanged:", expand(stamped).lock().plan_sha256 == expand(inputs).lock().plan_sha256)
+
+with a 73-year-old timestamp:
+  hash unchanged: True
+
+
+### 4e. Obligations are a closed vocabulary, in a legible order
+
+------------------------------------------------------------------------------
+In [14]:
+------------------------------------------------------------------------------
+print("obligation kinds:", OBLIGATION_KINDS)
+print("deferred kinds  :", sorted(DEFERRED_KINDS), "(Lab 3 runs no steps)")
+print()
+print("canonical order for cs-broad:")
+broad = lab03.SkillAgent(build_default_skill_registry(run_id="nb-order")).run(CASES[0])
+for obligation in broad.locked_plan.obligations:
+    print(f"  {obligation.obligation_id:34s} {obligation.kind}")
+
+obligation kinds: ('cover_unit', 'distribute_assignment', 'track_milestones', 'verify_step', 'ground_facts')
+deferred kinds  : ['verify_step'] (Lab 3 runs no steps)
+
+canonical order for cs-broad:
+  OBL-cover_unit/1                   cover_unit
+  OBL-cover_unit/2                   cover_unit
+  OBL-cover_unit/3                   cover_unit
+  OBL-cover_unit/4                   cover_unit
+  OBL-cover_unit/5                   cover_unit
+  OBL-distribute_assignment/ASG-01   distribute_assignment
+  OBL-distribute_assignment/ASG-02   distribute_assignment
+  OBL-distribute_assignment/ASG-03   distribute_assignment
+  OBL-ground_facts/all               ground_facts
+  OBL-track_milestones/course        track_milestones
+  OBL-verify_step/S1#1               verify_step
+  OBL-verify_step/S2#1               verify_step
+  OBL-verify_step/S2#2               verify_step
+  OBL-verify_step/S3#1               verify_step
+  OBL-verify_step/S4#1               verify_step
+  OBL-verify_step/S4#2               verify_step
+  OBL-verify_step/S5#1               verify_step
+  OBL-verify_step/S5#2               verify_step
+  OBL-verify_step/S6#2               verify_step
+  OBL-verify_step/S6#1               verify_step
+  OBL-verify_step/S7#1               verify_step
+  OBL-verify_step/S7#2               verify_step
+  OBL-verify_step/S8#1               verify_step
+  OBL-verify_step/S9#1               verify_step
+  OBL-verify_step/S10#1              verify_step
+  OBL-verify_step/S11#2              verify_step
+  OBL-verify_step/S11#1              verify_step
+
+
+## 5. Drift: the check §2.12 assigns to this lab
+
+------------------------------------------------------------------------------
+In [15]:
+------------------------------------------------------------------------------
+conforming = WorkspaceResult(
+    course_code="CS201",
+    units_covered=("1", "2"),
+    assignments_included=("ASG-01",),
+    milestones_emitted=True,
+    completed_steps=(),
+    reported_facts={
+        "total_available_marks": 40.0,
+        "marks_by_assignment.ASG-01": 40.0,
+    },
+    notes_by_unit={"1": 2, "2": 1},
+    ground_fact_keys=("total_available_marks", "marks_by_assignment.ASG-01"),
+)
+
+report = conforming.check_against(plan)
+print(report.summary())
+print()
+print(report.table())
+
+DRIFT: 1 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)
+
+kind     obligation        subject  detail
+--------------------------------------------------------------------------------------------
+missing  OBL-cover_unit/9  9        unit 9 is in the locked plan's scope but was not covered
+
+
+### 5a. Every deviation class, in one report
+
+------------------------------------------------------------------------------
+In [16]:
+------------------------------------------------------------------------------
+drifted = WorkspaceResult(
+    course_code="CS201",
+    units_covered=("1", "unit-99"),          # promised unit 2 dropped, a fake one added
+    assignments_included=("ASG-99",),         # ASG-01 dropped, a fake one added
+    milestones_emitted=False,                 # in scope, not emitted
+    completed_steps=(),
+    reported_facts={
+        "total_available_marks": 999.0,       # right key, wrong number
+        "marks_by_assignment.ASG-01": 40.0,
+        "invented_cohort_size": 400,           # no tool ever verified this
+    },
+    ground_fact_keys=("total_available_marks", "marks_by_assignment.ASG-01"),
+)
+
+drift_report = drifted.check_against(plan)
+print(drift_report.summary())
+print()
+print(drift_report.table())
+print()
+print("deviation classes found:", sorted({f.kind for f in drift_report.findings}))
+
+DRIFT: 9 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)
+
+kind            obligation                        subject                detail
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+missing         OBL-cover_unit/2                  2                      unit 2 is in the locked plan's scope but was not covered
+missing         OBL-cover_unit/9                  9                      unit 9 is in the locked plan's scope but was not covered
+missing         OBL-distribute_assignment/ASG-01  ASG-01                 assignment ASG-01 is in the locked plan's scope but was not distributed
+missing         OBL-ground_facts/all              all                    these reported facts were never traced to a tool: ['invented_cohort_size']
+missing         OBL-track_milestones/course       course                 the locked plan requires milestone tracking but the result emitted none
+unexpected      -                                 unit-99                unit unit-99 was covered but is not in the locked plan's scope
+unexpected      -                                 ASG-99                 assignment ASG-99 was distributed but is not in the locked plan's scope
+value_mismatch  -                                 invented_cohort_size   result reports 'invented_cohort_size'=400, which no tool verified for this plan
+value_mismatch  -                                 total_available_marks  result reports 'total_available_marks'=999.0 but the tool verified 40.0
+
+deviation classes found: ['missing', 'unexpected', 'value_mismatch']
+
+
+### 5b. Grounding: `marks_by_assignment.ASG-01` is a path, not a key
+
+------------------------------------------------------------------------------
+In [17]:
+------------------------------------------------------------------------------
+print("plan.verified_facts['marks_by_assignment']:")
+print(" ", plan.verified_facts["marks_by_assignment"])
+print()
+print("resolve_fact(facts, 'marks_by_assignment.ASG-01') ->",
+      resolve_fact(plan.verified_facts, "marks_by_assignment.ASG-01"))
+print("resolve_fact(facts, 'marks_by_assignment.ASG-99') ->",
+      repr(resolve_fact(plan.verified_facts, "marks_by_assignment.ASG-99")))
+print()
+print("MISSING is a sentinel, not None, because None is a legitimate fact value:")
+print("  resolve_fact({'a': None}, 'a') is None :", resolve_fact({"a": None}, "a") is None)
+print("  resolve_fact({'a': None}, 'b') is MISSING:", resolve_fact({"a": None}, "b") is MISSING)
+
+plan.verified_facts['marks_by_assignment']:
+  {'ASG-01': 40.0}
+
+resolve_fact(facts, 'marks_by_assignment.ASG-01') -> 40.0
+resolve_fact(facts, 'marks_by_assignment.ASG-99') -> <object object at 0x000001B75FB1C080>
+
+MISSING is a sentinel, not None, because None is a legitimate fact value:
+  resolve_fact({'a': None}, 'a') is None : True
+  resolve_fact({'a': None}, 'b') is MISSING: True
+
+
+### 5c. Deferred is not passed
+
+------------------------------------------------------------------------------
+In [18]:
+------------------------------------------------------------------------------
+print("plan obligations :", plan.obligation_count)
+print("checked          :", report.obligations_checked)
+print("deferred         :", report.obligations_deferred)
+print("coverage complete:", report.coverage_is_complete)
+print()
+print("an unknown kind fails rather than passes, because nothing can check it:")
+from course_organizer.skills import Obligation
+from course_organizer.skills.plan_skill import _content_payload, _sha256
+
+odd = Obligation(
+    obligation_id="OBL-future_kind/x",
+    kind="future_kind",
+    subject="x",
+    statement="a kind nothing knows how to check",
+)
+forged = LockedPlan.model_construct(
+    **{
+        **plan.model_dump(),
+        "obligations": (*plan.obligations, odd),
+        "obligation_count": plan.obligation_count + 1,
+        "plan_sha256": _sha256(
+            _content_payload(
+                course_code=plan.course_code,
+                units=plan.units,
+                assignment_ids=plan.assignment_ids,
+                include_milestones=plan.include_milestones,
+                obligations=(*plan.obligations, odd),
+                verified_facts=plan.verified_facts,
+                notes=plan.notes,
+                human_authority=plan.human_authority,
+            )
+        ),
+    }
+)
+for finding in conforming.check_against(forged).findings:
+    if "unknown kind" in finding.detail:
+        print(f"  [{finding.kind}] {finding.detail}")
+
+plan obligations : 6
+checked          : 6
+deferred         : 0
+coverage complete: True
+
+an unknown kind fails rather than passes, because nothing can check it:
+  [missing] obligation OBL-future_kind/x has unknown kind 'future_kind', so it cannot be verified
+
+
+## 6. `format_organised(result, template) -> Document`
+
+------------------------------------------------------------------------------
+In [19]:
+------------------------------------------------------------------------------
+for template_id, template in TEMPLATE_SPECS.items():
+    print(f"{template_id}  ({template.body_style})")
+    print(f"  title    : {template.title}")
+    print(f"  audience : {template.audience}")
+    print(f"  sections : {' -> '.join(template.sections)}")
+    print()
+
+faculty-pack  (markdown)
+  title    : Course Workspace Pack
+  audience : course faculty
+  sections : header -> plan_lock -> units -> assignments -> checks -> drift -> approval
+
+coordinator-brief  (plain)
+  title    : Coordinator Brief
+  audience : apniLeap AURA Coordinator
+  sections : header -> plan_lock -> milestones -> drift -> approval
+
+pipeline-json  (json)
+  title    : Course Workspace Shell
+  audience : downstream lab agents
+  sections : header -> plan_lock -> units -> assignments -> milestones -> checks -> drift -> approval
+
+
+------------------------------------------------------------------------------
+In [20]:
+------------------------------------------------------------------------------
+try:
+    TemplateSpec(
+        template_id="no-approval",
+        title="T",
+        audience="a",
+        sections=("header", "drift"),
+    )
+    print("accepted  <-- would be a bug")
+except pydantic.ValidationError as exc:
+    print("a template without an approval section is refused:")
+    for line in str(exc).splitlines():
+        if "Value error" in line:
+            print(" ", line.strip())
+
+a template without an approval section is refused:
+  Value error, template 'no-approval' must declare ['approval']; document 2.12 requires every artefact to name its approver and to be marked a draft [type=value_error, input_value={'template_id': 'no-appro...s': ('header', 'drift')}, input_type=dict]
+
+
+------------------------------------------------------------------------------
+In [21]:
+------------------------------------------------------------------------------
+try:
+    TemplateSpec(
+        template_id="imaginary",
+        title="T",
+        audience="a",
+        sections=("header", "no_such_section", "approval"),
+    )
+except pydantic.ValidationError as exc:
+    print("a template naming a section with no builder is refused:")
+    for line in str(exc).splitlines():
+        if "Value error" in line:
+            print(" ", line.strip())
+
+print()
+print("declared sections:", SECTIONS)
+
+a template naming a section with no builder is refused:
+  Value error, template 'imaginary' names unknown section(s) ['no_such_section']; valid sections are ['header', 'plan_lock', 'units', 'assignments', 'milestones', 'checks', 'drift', 'approval'] [type=value_error, input_value={'template_id': 'imaginar...h_section', 'approval')}, input_type=dict]
+
+declared sections: ('header', 'plan_lock', 'units', 'assignments', 'milestones', 'checks', 'drift', 'approval')
+
+
+### 6a. One case, three templates
+
+------------------------------------------------------------------------------
+In [22]:
+------------------------------------------------------------------------------
+registry = build_default_skill_registry(run_id="notebook-format")
+for template_id, template in TEMPLATE_SPECS.items():
+    document = registry.invoke(
+        "format_organised",
+        {"result": conforming, "plan": plan, "template": template},
+    ).unwrap()
+    print(f"--- {template_id}  ({template.body_style})  "
+          f"{document.line_count()} lines  status={document.status.value}")
+    print()
+    print(document.body)
+    print("=" * 78)
+    print()
+
+--- faculty-pack  (markdown)  56 lines  status=draft
+
+<!-- template: faculty-pack -->
+
+## Course Workspace
+
+Course Workspace Pack
+
+Course      : CS201 (Data Structures)
+Units       : 1, 2
+Assignments : ASG-01
+Audience    : course faculty
+As of       : 2026-10-15
+Assumed     : units narrowed to 1, 2 without asking the requester
+
+<!-- data: {"as_of": "2026-10-15", "assignments_in_scope": ["ASG-01"], "assumptions": ["units narrowed to 1, 2 without asking the requester"], "audience": "course faculty", "course_code": "CS201", "course_name": "Data Structures", "title": "Course Workspace Pack", "units_in_scope": ["1", "2"]} -->
+
+## Locked Blueprint
+
+Plan sha256      : 42f155b14d9934bc6e18aee7b73f8713b6b1c0fb1d31d9edb6c5e53c901b76a5
+Obligations      : 6
+Obligation kinds : cover_unit, distribute_assignment, ground_facts, track_milestones
+Locked at        : 2026-09-30T14:31:19+00:00
+
+<!-- data: {"integrity": "verified", "obligation_count": 6, "obligation_kinds": ["cover_unit", "distribute_assignment", "ground_facts", "track_milestones"], "plan_sha256": "42f155b14d9934bc6e18aee7b73f8713b6b1c0fb1d31d9edb6c5e53c901b76a5"} -->
+
+## Units Covered
+
+1    2 note(s)
+2    1 note(s)
+
+<!-- data: {"covered": 2, "units": [{"notes": 2, "unit": "1"}, {"notes": 1, "unit": "2"}]} -->
+
+## Assignments Distributed
+
+ASG-01  40.0 marks
+
+Total available marks: 40.0
+
+<!-- data: {"assignments": [{"assignment_id": "ASG-01", "max_marks": 40.0}], "included": 1} -->
+
+## Deviations From The Locked Plan
+
+DRIFT: 1 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)
+
+  [missing] OBL-cover_unit/9  unit 9 is in the locked plan's scope but was not covered
+
+<!-- data: {"conforms": false, "count": 1, "findings": [{"detail": "unit 9 is in the locked plan's scope but was not covered", "kind": "missing", "obligation_id": "OBL-cover_unit/9", "subject": "9"}], "summary": "DRIFT: 1 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)"} -->
+
+## Approval Required
+
+Approver : course_faculty
+Status   : DRAFT
+Approved : no - this lab implements no approval step
+Published: no
+Rule     : Document 2.12: no grade, feedback or published artefact advances without faculty approval.
+
+<!-- data: {"approved": false, "authority": "course_faculty", "published": false, "required": true, "rule": "Document 2.12: no grade, feedback or published artefact advances without faculty approval.", "status": "draft"} -->
+
+==============================================================================
+
+--- coordinator-brief  (plain)  40 lines  status=draft
+
+========================================================================
+TEMPLATE: coordinator-brief
+========================================================================
+
+COURSE WORKSPACE
+----------------
+Coordinator Brief
+
+Course      : CS201 (Data Structures)
+Units       : 1, 2
+Assignments : ASG-01
+Audience    : apniLeap AURA Coordinator
+As of       : 2026-10-15
+Assumed     : units narrowed to 1, 2 without asking the requester
+
+LOCKED BLUEPRINT
+----------------
+Plan sha256      : 42f155b14d9934bc6e18aee7b73f8713b6b1c0fb1d31d9edb6c5e53c901b76a5
+Obligations      : 6
+Obligation kinds : cover_unit, distribute_assignment, ground_facts, track_milestones
+Locked at        : 2026-09-30T14:31:19+00:00
+
+PROJECT MILESTONES
+------------------
+In scope : yes
+Emitted  : yes
+
+DEVIATIONS FROM THE LOCKED PLAN
+-------------------------------
+DRIFT: 1 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)
+
+  [missing] OBL-cover_unit/9  unit 9 is in the locked plan's scope but was not covered
+
+APPROVAL REQUIRED
+-----------------
+Approver : course_faculty
+Status   : DRAFT
+Approved : no - this lab implements no approval step
+Published: no
+Rule     : Document 2.12: no grade, feedback or published artefact advances without faculty approval.
+
+==============================================================================
+
+--- pipeline-json  (json)  82 lines  status=draft
+
+{
+  "body_style": "json",
+  "sections": {
+    "approval": {
+      "approved": false,
+      "authority": "course_faculty",
+      "published": false,
+      "required": true,
+      "rule": "Document 2.12: no grade, feedback or published artefact advances without faculty approval.",
+      "status": "draft"
+    },
+    "assignments": {
+      "assignments": [
+        {
+          "assignment_id": "ASG-01",
+          "max_marks": 40.0
+        }
+      ],
+      "included": 1
+    },
+    "drift": {
+      "conforms": false,
+      "count": 1,
+      "findings": [
+        {
+          "detail": "unit 9 is in the locked plan's scope but was not covered",
+          "kind": "missing",
+          "obligation_id": "OBL-cover_unit/9",
+          "subject": "9"
+        }
+      ],
+      "summary": "DRIFT: 1 deviation(s) from locked plan 42f155b14d99... (6 obligation(s) checked)"
+    },
+    "header": {
+      "as_of": "2026-10-15",
+      "assignments_in_scope": [
+        "ASG-01"
+      ],
+      "assumptions": [
+        "units narrowed to 1, 2 without asking the requester"
+      ],
+      "audience": "downstream lab agents",
+      "course_code": "CS201",
+      "course_name": "Data Structures",
+      "title": "Course Workspace Shell",
+      "units_in_scope": [
+        "1",
+        "2"
+      ]
+    },
+    "milestones": {
+      "emitted": true,
+      "in_scope": true,
+      "satisfied": true
+    },
+    "plan_lock": {
+      "integrity": "verified",
+      "obligation_count": 6,
+      "obligation_kinds": [
+        "cover_unit",
+        "distribute_assignment",
+        "ground_facts",
+        "track_milestones"
+      ],
+      "plan_sha256": "42f155b14d9934bc6e18aee7b73f8713b6b1c0fb1d31d9edb6c5e53c901b76a5"
+    },
+    "units": {
+      "covered": 2,
+      "units": [
+        {
+          "notes": 2,
+          "unit": "1"
+        },
+        {
+          "notes": 1,
+          "unit": "2"
+        }
+      ]
+    }
+  },
+  "template_id": "pipeline-json"
+}
+
+==============================================================================
+
+
+### 6b. There is no "final"
+
+------------------------------------------------------------------------------
+In [23]:
+------------------------------------------------------------------------------
+print("DocumentStatus members:", [s.value for s in DocumentStatus])
+print("has FINAL?    ", hasattr(DocumentStatus, "FINAL"))
+print("has PUBLISHED?", hasattr(DocumentStatus, "PUBLISHED"))
+print()
+clean = registry.invoke(
+    "format_organised",
+    {"result": conforming, "plan": plan, "template": TEMPLATE_SPECS["faculty-pack"]},
+).unwrap()
+bad = registry.invoke(
+    "format_organised",
+    {"result": drifted, "plan": plan, "template": TEMPLATE_SPECS["faculty-pack"]},
+).unwrap()
+for label, doc in (("conforming", clean), ("drifted", bad)):
+    approval = doc.data["approval"]
+    print(f"{label:11s} status={doc.status.value:18s} "
+          f"ready_for_review={doc.is_ready_for_review!s:5s} "
+          f"approved={approval['approved']!s:5s} published={approval['published']}")
+print()
+print("awaiting_approval is True for every document at this lab, by construction.")
+
+DocumentStatus members: ['draft', 'ready_for_review']
+has FINAL?     False
+has PUBLISHED? False
+
+conforming  status=draft              ready_for_review=False approved=False published=False
+drifted     status=draft              ready_for_review=False approved=False published=False
+
+awaiting_approval is True for every document at this lab, by construction.
+
+
+------------------------------------------------------------------------------
+In [24]:
+------------------------------------------------------------------------------
+print(clean.data["approval"])
+
+{'authority': 'course_faculty', 'required': True, 'approved': False, 'published': False, 'status': 'draft', 'rule': 'Document 2.12: no grade, feedback or published artefact advances without faculty approval.'}
+
+
+## 7. The pitfall: *"Keep skills case-agnostic and typed; hard-coding one case breaks reuse"*
+
+------------------------------------------------------------------------------
+In [25]:
+------------------------------------------------------------------------------
+FORBIDDEN = (
+    "CS201",
+    "DBMS402",
+    "Data Structures",
+    "Database Management",
+    "ASG-01",
+    "ASG-02",
+    "ASG-03",
+)
+
+print("scanning", SKILLS_DIR, "for", len(FORBIDDEN), "forbidden literals")
+print()
+offenders = []
+for path in sorted(SKILLS_DIR.glob("*.py")):
+    source = path.read_text(encoding="utf-8")
+    ast.parse(source)
+    hits = [literal for literal in FORBIDDEN if literal in source]
+    print(f"  {path.name:18s} {len(source):6d} bytes  "
+          f"{'clean' if not hits else 'OFFENDERS: ' + str(hits)}")
+    offenders.extend(f"{path.name}: {hit}" for hit in hits)
+
+print()
+print("offenders:", offenders or "none")
+
+scanning C:\Users\ummea\OneDrive\Documents\Default Project\agentic-course-organizer\src\course_organizer\skills for 7 forbidden literals
+
+  __init__.py          3795 bytes  clean
+  base.py             22694 bytes  clean
+  format_skill.py     33217 bytes  clean
+  plan_skill.py       48622 bytes  clean
+
+offenders: none
+
+
+------------------------------------------------------------------------------
+In [26]:
+------------------------------------------------------------------------------
+# Two more structural properties, same idea.
+
+print("1. the skill package does not import a lab module")
+for path in sorted(SKILLS_DIR.glob("*.py")):
+    source = path.read_text(encoding="utf-8")
+    print(f"   {path.name:18s} imports labs.lab0: {'labs.lab0' in source}")
+print()
+print("2. the skill package does no IO - skills transform, tools read")
+for path in sorted(SKILLS_DIR.glob("*.py")):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bad += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            bad.append(node.module or "")
+    offenders_io = [m for m in bad if m.split(".")[0] in ("os", "io", "pathlib", "open")]
+    print(f"   {path.name:18s} io imports: {offenders_io or 'none'}")
+print()
+print("A skill that opened a file would bypass the connector boundary Lab 2")
+print("exists to enforce, and there would be no ledger entry for it.")
+
+1. the skill package does not import a lab module
+   __init__.py        imports labs.lab0: False
+   base.py            imports labs.lab0: False
+   format_skill.py    imports labs.lab0: False
+   plan_skill.py      imports labs.lab0: False
+
+2. the skill package does no IO - skills transform, tools read
+   __init__.py        io imports: none
+   base.py            io imports: none
+   format_skill.py    io imports: none
+   plan_skill.py      io imports: none
+
+A skill that opened a file would bypass the connector boundary Lab 2
+exists to enforce, and there would be no ledger entry for it.
+
+
+## 8. The acceptance criterion, executed
+
+------------------------------------------------------------------------------
+In [27]:
+------------------------------------------------------------------------------
+print(f"{'case':10s} {'course':9s} {'units':5s} {'asg':4s} {'mile':5s} {'oblig':5s} narrative")
+print("-" * 100)
+for case in CASES:
+    print(f"{case.label:10s} {case.course_code:9s} {len(case.units):<5d} "
+          f"{len(case.assignment_ids):<4d} {str(case.include_milestones):5s} "
+          f"{'':5s} {case.narrative}")
+
+case       course    units asg  mile  oblig narrative
+----------------------------------------------------------------------------------------------------
+cs-broad   CS201     5     3    True        widest scope: every unit, every assignment, milestones on
+cs-narrow  CS201     1     1    False       single unit, single assignment, milestones OFF
+db-broad   DBMS402   5     3    True        different course, same wide shape
+db-narrow  DBMS402   2     2    False       different course, subset shape, milestones OFF
+
+
+------------------------------------------------------------------------------
+In [28]:
+------------------------------------------------------------------------------
+agent = SkillAgent(build_default_skill_registry(run_id="notebook-reuse"))
+proof = agent.prove_reuse()
+
+print(proof.summary())
+
+REUSE: the same two skills, four cases, no code changes
+case       course   units  asg  obligations  plan sha256   doc status
+---------------------------------------------------------------------------
+cs-broad   CS201    5      3    27           33db57242531  ready_for_review
+cs-narrow  CS201    1      1    20           ba572fd23ea0  ready_for_review
+db-broad   DBMS402  5      3    27           bed0b69766a8  ready_for_review
+db-narrow  DBMS402  2      2    22           ee290a055627  ready_for_review
+
+distinct locked plans : 4 of 4 (one per case, so each really did differ)
+skills invoked        : format_organised, plan
+documents rendered    : 12
+every case conforms   : yes
+
+
+------------------------------------------------------------------------------
+In [29]:
+------------------------------------------------------------------------------
+# 1. the same skills, not a per-case variant
+print("1. skills invoked across all four cases:", proof.skill_names_used)
+print("   exactly SKILL_NAMES?              ", set(proof.skill_names_used) <= set(SKILL_NAMES))
+print()
+# 2. four genuinely different plans
+print("2. distinct locked plan hashes:", proof.distinct_plan_hashes, "of", len(proof.runs))
+for run in proof.runs:
+    print(f"     {run.case.label:10s} {run.plan_sha256[:16]}  "
+          f"{run.locked_plan.obligation_count:2d} obligations  "
+          f"{run.locked_plan.units} units")
+print()
+# 3. per-case conformance, not a pooled claim
+print("3. every case conforms to its own plan:", proof.all_conform)
+for run in proof.runs:
+    d = run.document.drift
+    print(f"     {run.case.label:10s} {d.findings.__len__()} finding(s), "
+          f"{d.obligations_checked} checked, {d.obligations_deferred} deferred")
+print()
+# 4. every template, every case
+print("4. documents rendered:", proof.document_count, "=", len(CASES), "cases x",
+      len(TEMPLATE_SPECS), "templates")
+
+1. skills invoked across all four cases: ('format_organised', 'plan')
+   exactly SKILL_NAMES?               True
+
+2. distinct locked plan hashes: 4 of 4
+     cs-broad   33db57242531ad43  27 obligations  ('1', '2', '3', '4', '5') units
+     cs-narrow  ba572fd23ea0ad87  20 obligations  ('3',) units
+     db-broad   bed0b69766a85114  27 obligations  ('1', '2', '3', '4', '5') units
+     db-narrow  ee290a05562720e8  22 obligations  ('2', '3') units
+
+3. every case conforms to its own plan: True
+     cs-broad   0 finding(s), 10 checked, 17 deferred
+     cs-narrow  0 finding(s), 3 checked, 17 deferred
+     db-broad   0 finding(s), 10 checked, 17 deferred
+     db-narrow  0 finding(s), 5 checked, 17 deferred
+
+4. documents rendered: 12 = 4 cases x 3 templates
+
+
+### 8a. Every number in a document came from a tool
+
+------------------------------------------------------------------------------
+In [30]:
+------------------------------------------------------------------------------
+print(f"{'case':10s} {'total':>7s} {'units':6s} {'assignments':11s} facts")
+print("-" * 92)
+for run in proof.runs:
+    facts = run.result.reported_facts
+    total = facts.get("total_available_marks", "-")
+    print(f"{run.case.label:10s} {total:>7} {len(run.result.units_covered):<6d} "
+          f"{len(run.result.assignments_included):<11d} {sorted(facts)}")
+print()
+all_grounded = all(
+    key in run.result.ground_fact_keys
+    and resolve_fact(run.locked_plan.verified_facts, key) == value
+    for run in proof.runs
+    for key, value in run.result.reported_facts.items()
+)
+print("every reported number resolves to a verified fact:", all_grounded)
+
+case         total units  assignments facts
+--------------------------------------------------------------------------------------------
+cs-broad      65.0 5      3           ['marks_by_assignment.ASG-01', 'marks_by_assignment.ASG-02', 'marks_by_assignment.ASG-03', 'total_available_marks']
+cs-narrow     65.0 1      1           ['marks_by_assignment.ASG-01', 'total_available_marks']
+db-broad      55.0 5      3           ['marks_by_assignment.ASG-01', 'marks_by_assignment.ASG-02', 'marks_by_assignment.ASG-03', 'total_available_marks']
+db-narrow     55.0 2      2           ['marks_by_assignment.ASG-02', 'marks_by_assignment.ASG-03', 'total_available_marks']
+
+every reported number resolves to a verified fact: True
+
+
+### 8b. A course nobody has seen before
+
+------------------------------------------------------------------------------
+In [31]:
+------------------------------------------------------------------------------
+fresh = CaseSpec(
+    label="fresh",
+    course_code="ZZ999",
+    units=("42",),
+    assignment_ids=(),
+    include_milestones=False,
+)
+print("clarifications addressed to Lab 1 by field name:")
+for field, answer in fresh.clarifications().items():
+    print(f"  {field:12s} {answer!r}")
+print()
+print("units answer, singular because there is one:", repr(fresh.units_answer))
+print("assignments answer, empty rather than invented:", repr(fresh.assignments_answer))
+print()
+
+fresh_plan = expand(
+    PlanInputs(
+        course_code=fresh.course_code,
+        course_name="Never Before Seen",
+        units=fresh.units,
+        assignment_ids=(),
+        include_milestones=False,
+        steps=(),
+        verified_facts={"course_code": fresh.course_code},
+        notes=("built by a case that did not exist when the skills were written",),
+    )
+).lock()
+fresh_doc = build_default_skill_registry(run_id="fresh").invoke(
+    "format_organised",
+    {
+        "result": WorkspaceResult(
+            course_code=fresh.course_code,
+            units_covered=fresh.units,
+            milestones_emitted=False,
+        ),
+        "plan": fresh_plan,
+        "template": TEMPLATE_SPECS["faculty-pack"],
+    },
+).unwrap()
+print(fresh_doc.body)
+print("status:", fresh_doc.status.value, "| no code changed in skills/ to get this")
+
+clarifications addressed to Lab 1 by field name:
+  course_code  'ZZ999'
+  units        'unit 42'
+  assignments  ''
+  as_of        '2026-10-15'
+
+units answer, singular because there is one: 'unit 42'
+assignments answer, empty rather than invented: ''
+
+<!-- template: faculty-pack -->
+
+## Course Workspace
+
+Course Workspace Pack
+
+Course      : ZZ999 (Never Before Seen)
+Units       : 42
+Assignments : none
+Audience    : course faculty
+Assumed     : built by a case that did not exist when the skills were written
+
+<!-- data: {"as_of": null, "assignments_in_scope": [], "assumptions": ["built by a case that did not exist when the skills were written"], "audience": "course faculty", "course_code": "ZZ999", "course_name": "Never Before Seen", "title": "Course Workspace Pack", "units_in_scope": ["42"]} -->
+
+## Locked Blueprint
+
+Plan sha256      : 9a9c7e8a2c48322f6caab9b5ecda1ba43826463eb33e0cc90b1b64598a436a29
+Obligations      : 2
+Obligation kinds : cover_unit, ground_facts
+Locked at        : 2026-09-30T14:31:19+00:00
+
+<!-- data: {"integrity": "verified", "obligation_count": 2, "obligation_kinds": ["cover_unit", "ground_facts"], "plan_sha256": "9a9c7e8a2c48322f6caab9b5ecda1ba43826463eb33e0cc90b1b64598a436a29"} -->
+
+## Units Covered
+
+42    0 note(s)
+
+<!-- data: {"covered": 1, "units": [{"notes": 0, "unit": "42"}]} -->
+
+## Deviations From The Locked Plan
+
+None. Every obligation in the locked plan was met.
+
+<!-- data: {"conforms": true, "count": 0, "findings": [], "summary": "conforms to locked plan 9a9c7e8a2c48... (2 obligation(s) checked, no drift)"} -->
+
+## Approval Required
+
+Approver : course_faculty
+Status   : READY FOR REVIEW
+Approved : no - this lab implements no approval step
+Published: no
+Rule     : Document 2.12: no grade, feedback or published artefact advances without faculty approval.
+
+<!-- data: {"approved": false, "authority": "course_faculty", "published": false, "required": true, "rule": "Document 2.12: no grade, feedback or published artefact advances without faculty approval.", "status": "ready_for_review"} -->
+
+status: ready_for_review | no code changed in skills/ to get this
+
+
+## 9. The skill call ledger
+
+------------------------------------------------------------------------------
+In [32]:
+------------------------------------------------------------------------------
+ledger_registry = build_default_skill_registry(run_id="notebook-ledger")
+ledger_registry.invoke("plan", inputs)
+ledger_registry.invoke(
+    "format_organised",
+    {"result": conforming, "plan": plan, "template": TEMPLATE_SPECS["coordinator-brief"]},
+)
+print(ledger_registry.ledger.describe())
+
+SKILL CALL LEDGER
+call_id       skill             depth  elapsed  result  error
+-------------------------------------------------------------
+10808e639d24  plan              0      0.18ms   ok
+e71fbad1bdfb  format_organised  0      0.18ms   ok
+(2 call(s))
+
+
+------------------------------------------------------------------------------
+In [33]:
+------------------------------------------------------------------------------
+# A failing handler is recorded, not raised at the caller.
+from course_organizer.skills.base import SkillSpec
+
+spec = ledger_registry.get("plan")
+
+
+def boom(payload, ctx):
+    raise RuntimeError("planned failure")
+
+
+rogue = build_default_skill_registry(run_id="notebook-failure")
+rogue._skills["plan"] = SkillSpec(
+    name=spec.name,
+    description=spec.description,
+    input_model=spec.input_model,
+    output_model=spec.output_model,
+    handler=boom,
+)
+
+result = rogue.invoke("plan", inputs)
+print("ok    :", result.ok)
+print("error :", result.call.error)
+print("value :", repr(result.value), "<- fabricated nothing")
+print("ledger:", len(rogue.ledger), "entry, and it records the failure")
+try:
+    result.unwrap()
+except SkillError as exc:
+    print("unwrap raises:", exc)
+print()
+print("The type check is deliberately NOT caught. A handler returning the wrong")
+print("type means the skill is broken, not that the run failed:")
+wrong = build_default_skill_registry(run_id="notebook-wrong")
+wrong._skills["plan"] = SkillSpec(
+    name=spec.name,
+    description=spec.description,
+    input_model=spec.input_model,
+    output_model=spec.output_model,
+    handler=lambda payload, ctx: "not a LockedPlan",
+)
+try:
+    wrong.invoke("plan", inputs)
+except Exception as exc:
+    print(f"  {type(exc).__name__}[{exc.code}]: {exc}")
+
+ok    : False
+error : RuntimeError: planned failure
+value : None <- fabricated nothing
+ledger: 1 entry, and it records the failure
+unwrap raises: skill 'plan' failed: RuntimeError: planned failure
+
+The type check is deliberately NOT caught. A handler returning the wrong
+type means the skill is broken, not that the run failed:
+  SkillContractError[contract_violation]: skill 'plan' returned str, expected LockedPlan
+
+
+## 10. The full run, with drift detection shown
+
+------------------------------------------------------------------------------
+In [34]:
+------------------------------------------------------------------------------
+demo_registry = build_default_skill_registry(run_id="notebook-demo")
+agent = SkillAgent(demo_registry)
+good = agent.run(CASES[0])
+injected = agent.inject_drift(good)
+
+print(f"{'case':10s} {'status':18s} {'findings':8s} plan")
+print("-" * 100)
+print(f"{good.case.label:10s} {good.document.status.value:18s} "
+      f"{len(good.document.drift.findings):<8d} {good.plan_sha256[:24]}")
+print(f"{'(drifted)':10s} {injected.status.value:18s} "
+      f"{len(injected.drift.findings):<8d} {good.plan_sha256[:24]}")
+print()
+print("deviations the control caught:")
+for finding in injected.drift.findings:
+    print(f"  [{finding.kind:15s}] {finding.subject:30s} {finding.detail}")
+
+case       status             findings plan
+----------------------------------------------------------------------------------------------------
+cs-broad   ready_for_review   0        33db57242531ad43d3d55807
+(drifted)  draft              6        33db57242531ad43d3d55807
+
+deviations the control caught:
+  [missing        ] 5                              unit 5 is in the locked plan's scope but was not covered
+  [missing        ] ASG-03                         assignment ASG-03 is in the locked plan's scope but was not distributed
+  [missing        ] course                         the locked plan requires milestone tracking but the result emitted none
+  [unexpected     ] unit-99                        unit unit-99 was covered but is not in the locked plan's scope
+  [unexpected     ] ASG-99                         assignment ASG-99 was distributed but is not in the locked plan's scope
+  [value_mismatch ] total_available_marks          result reports 'total_available_marks'=999.0 but the tool verified 65.0
+
+
+## 11. Acceptance criteria, as assertions
+
+------------------------------------------------------------------------------
+In [35]:
+------------------------------------------------------------------------------
+checks: list[tuple[str, bool, object]] = []
+
+
+def check(label: str, passed: bool, detail: object = "") -> None:
+    checks.append((label, bool(passed), detail))
+
+
+check(
+    "exactly the two documented skills are registered",
+    set(registry.names()) == set(SKILL_NAMES),
+    sorted(registry.names()),
+)
+
+for run in proof.runs:
+    check(f"case {run.case.label} obeys its locked plan", run.conforms)
+    check(
+        f"case {run.case.label} plan passes its integrity check",
+        run.locked_plan.recompute_sha256() == run.plan_sha256,
+        run.plan_sha256[:12],
+    )
+    check(
+        f"case {run.case.label} document is ready for review, not published",
+        run.document.is_ready_for_review and run.document.awaiting_approval,
+        run.document.status.value,
+    )
+    check(f"case {run.case.label} claims no step it did not run", run.result.completed_steps == ())
+
+check("four cases produced four different locked plans",
+      proof.distinct_plan_hashes == len(proof.runs))
+check("every case rendered through every template",
+      proof.document_count == len(CASES) * len(TEMPLATE_SPECS))
+check("the same two skills served all of them",
+      set(proof.skill_names_used) <= set(SKILL_NAMES))
+check("no document is marked approved or published",
+      all(r.document.awaiting_approval for r in proof.runs))
+check("the drifted document is not ready for review",
+      not injected.is_ready_for_review and not injected.drift.conforms)
+check("drift was caught across every deviation class",
+      {f.kind for f in injected.drift.findings} == {"missing", "unexpected", "value_mismatch"},
+      sorted({f.kind for f in injected.drift.findings}))
+check("the course-identifier scan is clean", not offenders, offenders or "none")
+check("every reported number resolves to a verified fact", all_grounded)
+check("no status stronger than ready_for_review exists",
+      {s.value for s in DocumentStatus} == {"draft", "ready_for_review"})
+
+width = max(len(label) for label, _, _ in checks)
+for label, passed, detail in checks:
+    line = f"  [{'PASS' if passed else 'FAIL'}] {label.ljust(width)}"
+    if detail != "":
+        line += f"  {detail}"
+    print(line)
+
+failed = [label for label, passed, _ in checks if not passed]
+print()
+print(f"{len(checks) - len(failed)}/{len(checks)} acceptance checks passed")
+if failed:
+    raise SystemExit("FAILED: " + ", ".join(failed))
+
+  [PASS] exactly the two documented skills are registered            ['format_organised', 'plan']
+  [PASS] case cs-broad obeys its locked plan                       
+  [PASS] case cs-broad plan passes its integrity check               33db57242531
+  [PASS] case cs-broad document is ready for review, not published   ready_for_review
+  [PASS] case cs-broad claims no step it did not run               
+  [PASS] case cs-narrow obeys its locked plan                      
+  [PASS] case cs-narrow plan passes its integrity check              ba572fd23ea0
+  [PASS] case cs-narrow document is ready for review, not published  ready_for_review
+  [PASS] case cs-narrow claims no step it did not run              
+  [PASS] case db-broad obeys its locked plan                       
+  [PASS] case db-broad plan passes its integrity check               bed0b69766a8
+  [PASS] case db-broad document is ready for review, not published   ready_for_review
+  [PASS] case db-broad claims no step it did not run               
+  [PASS] case db-narrow obeys its locked plan                      
+  [PASS] case db-narrow plan passes its integrity check              ee290a055627
+  [PASS] case db-narrow document is ready for review, not published  ready_for_review
+  [PASS] case db-narrow claims no step it did not run              
+  [PASS] four cases produced four different locked plans           
+  [PASS] every case rendered through every template                
+  [PASS] the same two skills served all of them                    
+  [PASS] no document is marked approved or published               
+  [PASS] the drifted document is not ready for review              
+  [PASS] drift was caught across every deviation class               ['missing', 'unexpected', 'value_mismatch']
+  [PASS] the course-identifier scan is clean                         none
+  [PASS] every reported number resolves to a verified fact         
+  [PASS] no status stronger than ready_for_review exists           
+
+26/26 acceptance checks passed
+
+
+## 12. Reproducibility
+
+------------------------------------------------------------------------------
+In [36]:
+------------------------------------------------------------------------------
+print("LLM_BACKEND     :", os.getenv("LLM_BACKEND", "scripted (default)"))
+print("GOOGLE_API_KEY  :", "set" if os.getenv("GOOGLE_API_KEY") else "not set (not needed)")
+print()
+print("Skill-layer purity, checked rather than asserted:")
+print("  plan_skill imports       :", end=" ")
+print(sorted(
+    n.names[0].name if isinstance(n, ast.Import) else (n.module or "")
+    for n in ast.walk(ast.parse((SKILLS_DIR / "plan_skill.py").read_text(encoding="utf-8")))
+    if isinstance(n, (ast.Import, ast.ImportFrom))
+))
+print("  format_skill imports     :", end=" ")
+print(sorted(
+    n.names[0].name if isinstance(n, ast.Import) else (n.module or "")
+    for n in ast.walk(ast.parse((SKILLS_DIR / "format_skill.py").read_text(encoding="utf-8")))
+    if isinstance(n, (ast.Import, ast.ImportFrom))
+))
+print()
+print("No LLM client, no network, no clock in the hash: two lockings of one")
+print("input agree, and a timestamp in verified_facts does not move the hash.")
+print()
+print("To re-run this notebook end to end:")
+print("  jupyter lab notebooks/lab03_skill_creation.ipynb")
+print("  python -m pytest tests/test_lab03_skill_creation.py")
+print("  python -m course_organizer.labs.lab03_skill_creation")
+
+LLM_BACKEND     : scripted (default)
+GOOGLE_API_KEY  : not set (not needed)
+
+Skill-layer purity, checked rather than asserted:
+  plan_skill imports       : ['__future__', 'collections.abc', 'course_organizer.logging_setup', 'course_organizer.skills.base', 'datetime', 'hashlib', 'json', 'logging', 'pydantic', 're', 'typing']
+  format_skill imports     :
+
+['__future__', 'collections.abc', 'course_organizer.logging_setup', 'course_organizer.skills.base', 'course_organizer.skills.plan_skill', 'datetime', 'enum', 'hashlib', 'json', 'logging', 'pydantic', 'typing']
+
+No LLM client, no network, no clock in the hash: two lockings of one
+input agree, and a timestamp in verified_facts does not move the hash.
+
+To re-run this notebook end to end:
+  jupyter lab notebooks/lab03_skill_creation.ipynb
+  python -m pytest tests/test_lab03_skill_creation.py
+  python -m course_organizer.labs.lab03_skill_creation
+
+
+## 13. What this lab does not do
+
+==============================================================================
+end of notebook - 63 cells, 0 errors
+==============================================================================
