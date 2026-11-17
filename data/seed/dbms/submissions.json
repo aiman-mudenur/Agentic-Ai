@@ -1,0 +1,57 @@
+{
+  "course_code": "DBMS402",
+  "course_name": "Database Management Systems",
+  "term": "2026 - Semester I",
+  "provenance": "seed:dbms/submissions.json",
+  "derivation_note": "Only facts of collection are stored here: who submitted what, and when. `status` and `late_by_seconds` are deliberately absent, because they are DERIVED by LocalSeedStore.read_submissions from submitted_at against the assignment's due_date. A number that is typed by hand is a number that can be wrong.",
+  "submissions": [
+    {
+      "submission_id": "DB-A1-S001",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS104",
+      "student_name": "Neha Iyer",
+      "submitted_at": "2026-10-21T17:35:00+05:30",
+      "content": "For the selection and aggregation parts I wrote the relational algebra first and then the SQL, so each query has a one-line justification. The join part needed an explicit ON clause for every condition because a natural join would have matched on the column names and produced extra rows. For the outer join I used a left join and checked that unmatched left rows appear with a null on the right side. I tested each query against a small fixture where the expected row counts were known by hand, and one query on null values to confirm that comparisons with null do not behave like ordinary comparisons."
+    },
+    {
+      "submission_id": "DB-A1-S002",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS118",
+      "student_name": "Farhan Qureshi",
+      "submitted_at": "2026-10-22T09:55:00+05:30",
+      "content": "I answered each sub-part in order and kept the result of every intermediate step visible. The aggregation required a group by on the department column and a having clause for the count filter, since where runs before grouping. The multi-table join needed two keys joined in sequence rather than one composite condition. For the outer join part I compared left and full outer on the same data to show which side loses rows. Edge cases covered were duplicate join keys, a department with no employees, and a null department value."
+    },
+    {
+      "submission_id": "DB-A2-S003",
+      "assignment_id": "ASG-02",
+      "student_id": "23CS087",
+      "student_name": "Tanvi Desai",
+      "submitted_at": "2026-11-04T20:12:00+05:30",
+      "content": "For each relation I listed the candidate keys by testing every minimal superkey, then recovered the functional dependencies by attribute closure over each determinant. The staff relation violated third normal form on the project leader attribute because that attribute transitively determines the branch through leader staff number. Decomposing into staff, branch and leader removed the violation without losing a dependency. For the supplier schema, boyce codd normal form failed on a determinant that was not a candidate key, and the third normal form decomposition still carried it, so a further split was needed. I gave a worked example of a spurious tuple and a spurious join for the lossy join to show why the lossless check matters."
+    },
+    {
+      "submission_id": "DB-A2-S004",
+      "assignment_id": "ASG-02",
+      "student_id": "23CS095",
+      "student_name": "Arjun Verma",
+      "submitted_at": "2026-11-05T16:44:00+05:30",
+      "content": "I started from the functional dependencies given in the question and computed attribute closures, then read the candidate keys off the closures rather than guessing superkeys. That avoids the usual mistake of listing a key that is not minimal. The third normal form decomposition I chose keeps the determinant in its own relation, and I verified losslessness by computing the intersection of the decomposed relations and confirming it functionally determines one of them. Dependency preservation I checked by projecting each original dependency onto the decomposed relations. The worked example I added shows a join that is lossy with a concrete instance of a spurious tuple."
+    },
+    {
+      "submission_id": "DB-A3-S005",
+      "assignment_id": "ASG-03",
+      "student_id": "23CS073",
+      "student_name": "Ishita Sen",
+      "submitted_at": "2026-11-18T13:26:00+05:30",
+      "content": "Schedule A is serial in read-write order and is valid at every isolation level. Schedule B is not serial because the same item is written by two transactions with a read in between, which is a lost update. Schedule C produces a dirty read under read committed and is prevented under repeatable read. Schedule D is unrepeatable because a read returns two different values, and a write skew appears in the pair. I stated, for each schedule, the anomalies present and the lowest isolation level that prevents them, then gave a serial schedule with the same final state."
+    },
+    {
+      "submission_id": "DB-A3-S006",
+      "assignment_id": "ASG-03",
+      "student_id": "23CS129",
+      "student_name": "Karthik Reddy",
+      "submitted_at": "2026-11-20T10:02:00+05:30",
+      "content": "I classified each schedule by the order of its read-write pairs. The first is serial. The second shows a dirty read followed by an abort, so the value read is never committed. The third is a non-repeatable read: the same transaction reads the same item twice and gets different values because a concurrent commit lands in between. The fourth is a write skew, where two transactions read a shared predicate and then each writes a row violating it. For each one I named the anomaly, the isolation level that prevents it, and a serial schedule with an equivalent final state."
+    }
+  ]
+}

@@ -39,6 +39,22 @@ def _force_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_BACKEND", "hashing")
 
 
+@pytest.fixture(autouse=True)
+def _no_leaked_dependency_overrides() -> None:
+    """Keep FastAPI's dependency overrides from leaking between tests.
+
+    ``app.dependency_overrides`` is process-global: a test that redirects the
+    database session to its own temp engine and never removes the override
+    silently redirects every *later* test's DB access too, which shows up as
+    unrelated login failures. Clearing after each test keeps that redirection
+    local to the test that asked for it.
+    """
+    yield
+    main = sys.modules.get("api.main")
+    if main is not None:
+        main.app.dependency_overrides.clear()
+
+
 @pytest.fixture(scope="session")
 def fastembed_available() -> bool:
     """Is the learned model already on this machine?

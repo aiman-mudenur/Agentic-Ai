@@ -8,6 +8,9 @@ secrets.json
 *.token.json
 oauth_creds.json
 
+# Per-user Google/Classroom OAuth tokens (never commit)
+data/tokens/
+
 # Runtime output (doc 2.10 Lab 6: audit log, checkpoints, published versions)
 data/workspace/
 
@@ -32,3 +35,10 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Runtime artifacts — kept out of repo for hygiene (not destructive; files persist on disk)
+*.db
+*.sqlite*
+*.log
+cd
+api8006.*

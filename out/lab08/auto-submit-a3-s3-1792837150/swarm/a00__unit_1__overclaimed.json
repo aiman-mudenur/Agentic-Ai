@@ -1,0 +1,75 @@
+{
+  "assignment_id": "",
+  "attempt": 0,
+  "content": {
+    "assignment_ids": [
+      "ASG-01",
+      "ASG-02"
+    ],
+    "expected_assignment_ids": [
+      "ASG-01"
+    ],
+    "expected_note_count": 2,
+    "expected_submission_ids": [
+      "DS-A1-S001",
+      "DS-A1-S002",
+      "DS-A1-S003",
+      "DS-A1-S004"
+    ],
+    "note_count": 2,
+    "submission_ids": [
+      "DS-A1-S001",
+      "DS-A1-S002",
+      "DS-A1-S003",
+      "DS-A1-S004"
+    ],
+    "unit": "1"
+  },
+  "item_id": "1",
+  "key": "unit:1",
+  "kind": "unit",
+  "priority": 1,
+  "provenance": {
+    "base": {
+      "assignment_ids": [
+        "ASG-01"
+      ],
+      "expected_assignment_ids": [
+        "ASG-01"
+      ],
+      "expected_note_count": 2,
+      "expected_submission_ids": [
+        "DS-A1-S001",
+        "DS-A1-S002",
+        "DS-A1-S003",
+        "DS-A1-S004"
+      ],
+      "foreign_assignment": "ASG-02",
+      "note_count": 2,
+      "submission_ids": [
+        "DS-A1-S001",
+        "DS-A1-S002",
+        "DS-A1-S003",
+        "DS-A1-S004"
+      ],
+      "unit": "1"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 0.2,
+  "strategy": "overclaimed",
+  "unit": "1"
+}

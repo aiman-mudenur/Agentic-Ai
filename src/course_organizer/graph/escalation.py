@@ -8,11 +8,16 @@ module attaches the draft rather than just the failure list. A human handed "3
 attempts failed" restarts the run; a human handed the draft can fix the one
 submission that broke.
 
-The two reasons are kept distinct because they need different actions:
+The reasons are kept distinct because they need different actions:
 
 ``retry_budget_exhausted``
     Something about the data is wrong in a way regeneration did not fix. The
     human needs the per-check detail and the draft to correct it.
+
+``unrepairable``
+    No finding has a safe automatic repair (Lab 10) — typically a publish
+    without faculty approval, which only a human decision repairs. The run
+    escalates immediately instead of spending retries proving nothing.
 
 ``refuse``
     The human said no. Re-running will not change their mind. The escalation
@@ -43,7 +48,7 @@ def build_escalation(
 
     Args:
         state: The run's state at the moment it stopped.
-        reason: ``retry_budget_exhausted`` or ``refuse``.
+        reason: ``retry_budget_exhausted``, ``unrepairable`` or ``refuse``.
         max_attempts: The bound that was spent.
         escalated_to: The named human. Doc 2.2 line 467.
         decided_by: For a refusal, who refused. Empty for exhaustion, where

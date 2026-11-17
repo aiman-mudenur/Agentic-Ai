@@ -166,6 +166,22 @@ def notes_repository(state: Mapping[str, Any], ctx: Any) -> SpecialistResult:
 # ---------------------------------------------------------------------------
 
 
+def _authorized_aids(state: Mapping[str, Any]) -> Optional[set[str]]:
+    """Assignment ids from an authorized plan, or None when absent.
+
+    ``None`` means: no filtering, today's behavior exactly. An empty set
+    means: authorized scope with nothing mappable — filter everything rather
+    than silently widen, so validation fails loudly with "no draft grades".
+    """
+    raw = state.get("authorized_plan")
+    if raw is None:
+        return None
+    try:
+        return {str(a) for a in (dict(raw).get("assignment_ids") or [])}
+    except Exception:
+        return set()
+
+
 def assignment_distribution(state: Mapping[str, Any], ctx: Any) -> SpecialistResult:
     """Read the faculty-approved assignment briefs and rubrics.
 
@@ -208,6 +224,10 @@ def assignment_distribution(state: Mapping[str, Any], ctx: Any) -> SpecialistRes
         if a.approved_by
     ]
     withheld = len(result.assignments) - len(rows)
+    allowed = _authorized_aids(state)
+    scoped = allowed is not None
+    if scoped:
+        rows = [r for r in rows if r["assignment_id"] in allowed]
     return SpecialistResult(
         step_id="w2",
         agent="Assignment Distribution Agent",
@@ -215,6 +235,7 @@ def assignment_distribution(state: Mapping[str, Any], ctx: Any) -> SpecialistRes
         summary=(
             f"distributed {len(rows)} faculty-approved brief(s)"
             + (f"; withheld {withheld} unapproved" if withheld else "")
+            + ("; authorized scope" if scoped else "")
         ),
         update={"assignments": rows},
         read=len(result.assignments),
@@ -263,19 +284,29 @@ def submission_collection(state: Mapping[str, Any], ctx: Any) -> SpecialistResul
         }
         for s in result.submissions
     ]
+    allowed = _authorized_aids(state)
+    on_time, late_count, scoped = result.on_time_count, result.late_count, False
+    if allowed is not None:
+        scoped = True
+        rows = [r for r in rows if r["assignment_id"] in allowed]
+        kept = {r["submission_id"] for r in rows}
+        late_flags = [f for f in late_flags if f["submission_id"] in kept]
+        late_count = sum(1 for r in rows if r["late_by_seconds"] > 0)
+        on_time = len(rows) - late_count
     return SpecialistResult(
         step_id="w3",
         agent="Submission Collection Agent",
         ok=True,
         summary=(
             f"collected {len(rows)} submission(s): "
-            f"{result.on_time_count} on time, {result.late_count} late, "
+            f"{on_time} on time, {late_count} late, "
             f"{result.previously_scored_count} previously scored"
+            + ("; authorized scope" if scoped else "")
         ),
         update={
             "submissions": rows,
             "late_flags": late_flags,
-            "reported_late_count": result.late_count,
+            "reported_late_count": late_count,
         },
         read=len(result.submissions),
     )

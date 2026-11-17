@@ -41,9 +41,12 @@ from typing import Any, Callable, Mapping, Optional
 
 from langgraph.types import interrupt
 
+from course_organizer.evidence import SourceIndex, build_grade_evidence
 from course_organizer.graph.context import RunContext
+from course_organizer.graph.registry import get_global_registry
 from course_organizer.graph.escalation import build_escalation
 from course_organizer.graph.specialists import run_specialists
+from course_organizer.graph.repair import diagnose, steps_for, sync_grade_metadata
 from course_organizer.graph.state import (
     DECISION_APPROVE,
     DECISION_EDIT,
@@ -106,6 +109,97 @@ def _now() -> str:
 def _audit(node: str, summary: str, **extra: Any) -> dict[str, Any]:
     """One audit entry. Every node appends exactly one."""
     return {"node": node, "at": _now(), "summary": summary, **extra}
+
+
+def _source_index(state: Mapping[str, Any]) -> SourceIndex:
+    """The authorized sources this run may cite, from its own verified reads.
+
+    Lab 9's grounding check resolves every locator a grade offers back to a
+    record. The records are the ones the specialists actually read out of the
+    store and put in the state -- nothing is re-fetched here, because the point
+    of the check is to test the draft against the run's own evidence rather
+    than against whatever the store says at validation time.
+
+    Args:
+        state: The accumulated state after ``workers``.
+
+    Returns:
+        The index, with units/rubrics/submissions keyed by their real ids.
+    """
+    course = str(state.get("course_code", "") or "")
+    units = state.get("units_covered") or state.get("units_requested") or ()
+    notes_by_unit = state.get("notes_by_unit") or {}
+    assignments = state.get("assignments") or []
+    submissions = state.get("submissions") or []
+
+    # Submissions carry no unit of their own; the assignment they answer does.
+    unit_of_assignment = {
+        str(a.get("assignment_id", "")): str(a.get("unit", "") or "")
+        for a in assignments
+    }
+    return SourceIndex(
+        units={
+            str(u): {
+                "course_code": course,
+                "note_count": int(notes_by_unit.get(str(u), 0) or 0),
+            }
+            for u in units
+        },
+        # No note locator is ever offered by a grade, so the notes channel stays
+        # empty rather than being filled with a plausible-looking placeholder.
+        notes={},
+        rubrics={
+            str(a.get("assignment_id", "")): {
+                "course_code": course,
+                "unit": str(a.get("unit", "") or ""),
+                "criteria": list(a.get("rubric") or []),
+            }
+            for a in assignments
+        },
+        submissions={
+            str(s.get("submission_id", "")): {
+                "student_id": str(s.get("student_id", "")),
+                "course_code": course,
+                "unit": unit_of_assignment.get(
+                    str(s.get("assignment_id", "")), ""
+                ),
+                "status": str(s.get("status", "")),
+                "submitted_at": str(s.get("submitted_at", "")),
+            }
+            for s in submissions
+        },
+    )
+
+
+def _evidence_tables(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one evidence table per draft grade (Lab 9).
+
+    Stored as JSON-mode dumps rather than models so the tables survive a
+    checkpoint round trip unchanged; ``check_evidence_grounded`` accepts both.
+
+    Args:
+        state: The accumulated state after ``workers``.
+
+    Returns:
+        Submission id -> evidence-table dump. A grade with no id is skipped
+        rather than filed under ``""``, where it would never be found.
+    """
+    index = _source_index(state)
+    course = str(state.get("course_code", "") or "")
+    unit_scope = [
+        str(u)
+        for u in (state.get("units_requested") or state.get("units_covered") or ())
+    ]
+    tables: dict[str, Any] = {}
+    for row in state.get("draft_grades") or []:
+        dump = row.model_dump() if hasattr(row, "model_dump") else dict(row)
+        sid = str(dump.get("submission_id", "") or "")
+        if not sid:
+            continue
+        tables[sid] = build_grade_evidence(
+            dump, index, course_scope=course, unit_scope=unit_scope or None
+        ).model_dump(mode="json")
+    return tables
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +279,78 @@ def make_ingest(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _adopt_authorized_plan(
+    raw: Any, state: Mapping[str, Any], ctx: RunContext
+) -> LockedPlan:
+    """Verify a caller-supplied locked plan and return it, or refuse loudly.
+
+    The caller may hand the run an already-approved plan. It is *adopted*, not
+    re-expanded, because the whole point of a locked plan is that its hash and
+    its scope are the authority the run executes under. But adoption is a trust
+    boundary, so every property that makes the plan trustworthy is re-checked
+    here: integrity (the hash still matches its content), a lock timestamp, the
+    trusted human authority, the right course, and a scope that the scope tool
+    actually verified.
+
+    Args:
+        raw: The ``authorized_plan`` seed, as a mapping.
+        state: The state after ``ingest``; its verified scope bounds the plan.
+        ctx: Per-run dependencies, for the trusted authority and course.
+
+    Returns:
+        The verified :class:`LockedPlan`.
+
+    Raises:
+        ValueError: For a malformed, tampered, unlocked, unauthorized,
+            contradictory, or out-of-scope plan. The message always names
+            ``authorized plan`` so a caller can tell a scope refusal from an
+            infrastructure failure.
+    """
+    facts = state.get("scope_verified_facts") or {}
+    verified_units = {str(u) for u in (facts.get("units_covered") or ())}
+    verified_aids = {str(a) for a in (state.get("scope_assignment_ids") or ())}
+    if not verified_units or not verified_aids:
+        raise ValueError(
+            "authorized plan requires the verified scope facts from ingest: "
+            "units_covered and scope_assignment_ids are empty, so the plan "
+            "cannot be checked against the syllabus"
+        )
+    try:
+        plan = LockedPlan(**dict(raw))
+    except Exception as exc:
+        raise ValueError(f"authorized plan malformed: {exc}") from exc
+    try:
+        plan.recompute_sha256()
+    except Exception as exc:
+        raise ValueError(f"authorized plan tampered: {exc}") from exc
+    if not (plan.locked_at or "").strip():
+        raise ValueError("authorized plan unlocked: no lock timestamp")
+    if plan.human_authority != ctx.human_authority:
+        raise ValueError(
+            f"unauthorized authorized plan: approver {plan.human_authority!r} is "
+            f"not the trusted authority {ctx.human_authority!r}"
+        )
+    course = str(state.get("course_code", "") or "")
+    if plan.course_code != course:
+        raise ValueError(
+            f"contradictory authorized plan: locked for course "
+            f"{plan.course_code!r}, run is for {course!r}"
+        )
+    unsupported = [u for u in plan.units if str(u) not in verified_units]
+    if unsupported:
+        raise ValueError(
+            f"authorized plan names unit(s) {unsupported} that the scope tool "
+            f"did not verify; verified scope is {sorted(verified_units)}"
+        )
+    unknown = [a for a in plan.assignment_ids if str(a) not in verified_aids]
+    if unknown:
+        raise ValueError(
+            f"authorized plan names assignment(s) {unknown} that the scope tool "
+            f"did not verify; verified scope is {sorted(verified_aids)}"
+        )
+    return plan
+
+
 def make_plan(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
     """``plan`` -- lock the blueprint before any work starts.
 
@@ -195,6 +361,46 @@ def make_plan(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
     """
 
     def plan(state: CourseState) -> dict[str, Any]:
+        authorized = state.get("authorized_plan")
+        if authorized:
+            adopted = _adopt_authorized_plan(authorized, state, ctx)
+            summary = (
+                f"adopted authorized plan: {adopted.obligation_count} "
+                f"obligation(s), units {list(adopted.units)}, "
+                f"plan_sha256={adopted.plan_sha256[:12]}"
+            )
+            # The plan's scope becomes the run's scope. Everything downstream
+            # -- which notes are read, which submissions are graded, what the
+            # document reports -- follows from these keys, so narrowing them
+            # here is what makes "executed under its own scope" true rather
+            # than merely intended.
+            return {
+                "plan_locked": adopted.model_dump(mode="json"),
+                "plan_sha256": adopted.plan_sha256,
+                "obligation_count": adopted.obligation_count,
+                "plan_inputs": {
+                    "course_code": adopted.course_code,
+                    "course_name": adopted.course_name,
+                    "units": list(adopted.units),
+                    "assignment_ids": list(adopted.assignment_ids),
+                    "include_milestones": adopted.include_milestones,
+                    "verified_facts": dict(adopted.verified_facts),
+                    "human_authority": adopted.human_authority,
+                    "adopted_from": "authorized_plan",
+                },
+                "units_requested": list(adopted.units),
+                "units_covered": list(adopted.units),
+                "scope_assignment_ids": list(adopted.assignment_ids),
+                "audit_trail": [
+                    _audit(
+                        "plan",
+                        summary,
+                        plan_sha256=adopted.plan_sha256,
+                        obligation_count=adopted.obligation_count,
+                    )
+                ],
+                "nodes_ran": ["plan"],
+            }
         units = tuple(state.get("units_requested") or state.get("units_covered") or ())
         # The assignment ids come from `ingest`, which read them from the scope
         # tool. Locking an empty scope would make every assignment the
@@ -273,13 +479,44 @@ def make_workers(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
             + (f" [{', '.join(e['step_id'] for e in failed)}]" if failed else "")
         )
         LOGGER.info("workers %s", summary)
+        # Lab 10: record which submissions had their grade metadata synced
+        # during this attempt. sync_grade_metadata re-derives flags from
+        # authoritative maps and returns the IDs of items that were changed.
+        grades = state.get("draft_grades", []) or []
+        late_by: dict[str, int] = {}
+        for f in state.get("late_flags", []) or []:
+            sid = str(f.get("submission_id", ""))
+            if sid:
+                late_by[sid] = int(f.get("late_by_seconds", 0))
+        # ``similarity_flags`` is a list of flag records; the sync wants the set
+        # of submission ids those records name.
+        flagged_ids = {
+            str(f.get("submission_id", ""))
+            for f in (state.get("similarity_flags") or [])
+            if isinstance(f, Mapping)
+        }
+        repaired: list[str] = []
+        if grades:
+            _, repaired = sync_grade_metadata(
+                grades,
+                scores=state.get("similarity_scores", {}) or {},
+                against=state.get("similarity_against", {}) or {},
+                flagged=flagged_ids,
+                late_by=late_by,
+            )
+        # Lab 9: ground the grades this pass produced. Built from the state the
+        # specialists just returned, so the tables describe the work the run
+        # actually did and validate can check it on the same pass.
+        evidence_tables = _evidence_tables({**state, **merged})
         return {
             **merged,
+            "evidence_tables": evidence_tables,
             "attempt_log": [
                 {
                     "pass": attempt + 1,
                     "specialists": entries,
                     "at": _now(),
+                    "repaired": repaired,
                 }
             ],
             "audit_trail": [_audit("workers", summary, attempt=attempt + 1)],
@@ -315,12 +552,36 @@ def make_validate(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
             for f in state.get("late_flags", [])
         }
         attempt = int(state.get("attempts", 0)) + 1
+        tables = state.get("evidence_tables") or {}
         report = validate(
-            CheckContext(grades, ceilings, late_by), attempt=attempt
+            # Lab 9: the tables ride into the check. Omitting them would make
+            # the fifth check fail closed on every run, which reads as
+            # "ungrounded" when it really means "not passed in".
+            CheckContext(grades, ceilings, late_by, tables),
+            attempt=attempt,
         )
+        # Lab 10: locate each failure before deciding what to do about it. A
+        # failure no worker can repair (a grade already published without an
+        # approver) must escalate immediately rather than spend the retry
+        # budget re-running specialists that cannot change the outcome.
+        findings = diagnose(
+            report.failing,
+            grades=grades,
+            ceilings=ceilings,
+            late_by=late_by,
+            tables=tables,
+        )
+        # One finding no worker may touch is enough to stop: re-running the
+        # specialists cannot make an already-published, unapproved grade
+        # approvable, so spending the retry budget on it proves nothing.
+        unrepairable = any(f.repairable == "none" for f in findings)
         route = next_route(
-            report, attempts=attempt, max_attempts=ctx.max_attempts
+            report,
+            attempts=attempt,
+            max_attempts=ctx.max_attempts,
+            unrepairable=unrepairable,
         )
+        repair_findings = [f.model_dump(mode="json") for f in findings]
         if report.passed:
             summary = (
                 f"pass {attempt}: all {len(report.checks_run)} check(s) passed"
@@ -346,6 +607,7 @@ def make_validate(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
                 )
             ],
             "nodes_ran": ["validate"],
+            "repair_findings": repair_findings,
         }
 
     return validate_node
@@ -384,6 +646,60 @@ def make_assemble(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
         for key in sorted(locked.verified_facts):
             if key in GROUNDED_FACT_KEYS:
                 grounded[key] = locked.verified_facts[key]
+
+        # Lab 13: select and run the domain specialist for this run's domain.
+        # Default to "theory" for backward compatibility with callers that
+        # do not specify a domain; the contract explicitly requires a domain
+        # but we provide a safe default so existing callers continue to work.
+        domain: str = state.get("domain") or "theory"
+        registry = get_global_registry()
+        specialist_ok: bool = True
+        domain_error: bool = False
+
+        try:
+            specialist_fn = registry.get(domain)
+            # Run the specialist with the current state and ctx.
+            # The specialist returns a SpecialistResult; its update dict
+            # feeds into state so the specialist output reaches the final
+            # organised workspace.
+            result = specialist_fn(state, ctx)
+            # Record the specialist result in the audit trail.
+            state.setdefault("specialist_audit", []).append(
+                {
+                    "step_id": result.step_id,
+                    "agent": result.agent,
+                    "ok": result.ok,
+                    "summary": result.summary,
+                    "read": result.read,
+                }
+            )
+            specialist_ok = result.ok
+            if not specialist_ok:
+                # Invalid specialist output: record the failure reason
+                # so downstream gate/publication cannot mistake it for success.
+                state["specialist_ok"] = False
+                state["specialist_failed_reason"] = result.summary
+        except Exception as e:  # noqa: BLE001 - unknown domain or invalid output
+            # Domain not registered or specialist raised an exception.
+            # Preserve the exception context; do not silently continue
+            # as though the specialist succeeded.
+            domain_error = True
+            specialist_ok = False
+            specialist_error = f"{type(e).__name__}: {e}"
+            state["domain_error"] = True
+            state["specialist_ok"] = False
+            state["specialist_error"] = specialist_error
+            # Record the domain error in the audit trail.
+            state.setdefault("specialist_audit", []).append(
+                {
+                    "step_id": "w13",
+                    "agent": "Domain Specialist",
+                    "ok": False,
+                    "summary": f"domain {domain!r} is unknown or specialist failed",
+                    "read": 0,
+                    "error": specialist_error,
+                }
+            )
 
         workspace = WorkspaceResult(
             course_code=state["course_code"],
@@ -428,6 +744,18 @@ def make_assemble(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
             "status": CourseStatus.DRAFT,
             "audit_trail": [_audit("assemble", summary, document_id=document.document_id)],
             "nodes_ran": ["assemble"],
+            # Lab 14: the resolved domain and specialist outcome are returned
+            # explicitly, so the state the gate and publish see carries them
+            # rather than every downstream node re-deriving (or worse,
+            # assuming) which specialist ran.
+            "domain": domain,
+            "domain_error": state.get("domain_error", False),
+            "specialist_ok": state.get("specialist_ok", True),
+            # The failure reason and error text ride along too, so publish's
+            # refusal (and the audit trail) can name the cause rather than
+            # only the boolean.
+            "specialist_failed_reason": state.get("specialist_failed_reason", ""),
+            "specialist_error": state.get("specialist_error", ""),
         }
 
     return assemble
@@ -467,6 +795,13 @@ def make_gate(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
         validation = state.get("validation")
         request = GateRequest(
             course_code=state["course_code"],
+            # Lab 14: surface the domain and its specialist outcome to the
+            # reviewer. The gate decides whether to approve; approving a run
+            # whose specialist failed is a decision the named human is
+            # entitled to make, but only if they are told.
+            domain=state.get("domain") or "theory",
+            specialist_ok=state.get("specialist_ok", True),
+            domain_error=state.get("domain_error", False),
             course_name=state.get("course_name", ""),
             draft_grades=list(grades),
             validation=validation,
@@ -613,6 +948,27 @@ def make_publish(ctx: RunContext) -> Callable[[CourseState], dict[str, Any]]:
                 "publish requires a recorded faculty approval; the gate "
                 "returned "
                 + (repr(getattr(decision, "decision", None)) if decision else "no decision")
+            )
+        # Lab 14: an approval is necessary but not sufficient. A run whose
+        # domain specialist failed (or whose domain was unknown) must not
+        # publish, because the workspace was assembled without the domain
+        # expertise the faculty believes they are approving. Checked here
+        # rather than at the gate because this is the point the invariant
+        # has to hold, and because a resumed run could reach publish by a
+        # path that never re-consulted the gate's routing. ``is False``
+        # deliberately: runs seeded before these keys existed have no
+        # specialist outcome recorded, and refusing those retroactively
+        # would break every checkpoint written before Lab 14.
+        if state.get("specialist_ok") is False or state.get("domain_error") is True:
+            raise PermissionError(
+                "publish refused: the domain specialist was unsuccessful "
+                f"(specialist_ok={state.get('specialist_ok')}, "
+                f"domain_error={state.get('domain_error')}); "
+                + str(
+                    state.get("specialist_failed_reason")
+                    or state.get("specialist_error")
+                    or "no reason recorded"
+                )
             )
         if unapproved:
             raise PermissionError(

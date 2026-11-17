@@ -462,7 +462,7 @@ class GoogleWorkspaceTransport(Protocol):
         ...
 
     def course(self, course_id: str) -> dict[str, Any]:
-        """``courses().get(courseId=...)``."""
+        """``courses().get(id=...)`` — the discovery doc names this parameter ``id``."""
         ...
 
     def course_work(self, course_id: str) -> list[dict[str, Any]]:
@@ -569,8 +569,8 @@ class RestGoogleWorkspaceTransport:
         )
 
     def course(self, course_id: str) -> dict[str, Any]:
-        """``courses().get(courseId=...)``."""
-        return self._classroom_api().courses().get(courseId=course_id).execute()
+        """``courses().get(id=...)`` — note: the discovery doc names it ``id``, not ``courseId``."""
+        return self._classroom_api().courses().get(id=course_id).execute()
 
     def course_work(self, course_id: str) -> list[dict[str, Any]]:
         """``courses().courseWork().list(courseId=...)``, paginated."""
@@ -617,7 +617,7 @@ class RestGoogleWorkspaceTransport:
             self._classroom_api().courses().courseWorkMaterials(),
             "list",
             {"courseId": course_id},
-            "courseWorkMaterials",
+            "courseWorkMaterial",
         )
 
     def topics(self, course_id: str) -> dict[str, dict[str, Any]]:
@@ -626,9 +626,18 @@ class RestGoogleWorkspaceTransport:
             self._classroom_api().courses().topics(),
             "list",
             {"courseId": course_id},
-            "topics",
+            "topic",
         )
         return {t["id"]: t for t in listed if t.get("id")}
+
+    def announcements(self, course_id: str) -> list[dict[str, Any]]:
+        """``courses().announcements().list(...)``, paginated."""
+        return self._paged(
+            self._classroom_api().courses().announcements(),
+            "list",
+            {"courseId": course_id},
+            "announcements",
+        )
 
     # -- Drive ----------------------------------------------------------
     def file_metadata(self, file_id: str) -> dict[str, Any]:

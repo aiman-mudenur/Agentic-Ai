@@ -232,6 +232,13 @@ class GateRequest(BaseModel):
     units_covered: list[str] = Field(default_factory=list)
     assignments_included: list[str] = Field(default_factory=list)
     attempt: int = 0
+    #: Lab 14: which domain specialist produced the workspace, and whether it
+    #: succeeded. Carried to the reviewer because approving a run whose
+    #: specialist failed is a decision only a named human may make -- but only
+    #: if they are told, rather than shown a clean-looking document.
+    domain: str = "theory"
+    specialist_ok: bool = True
+    domain_error: bool = False
     summary: str = ""
 
 
@@ -260,6 +267,18 @@ class CourseState(TypedDict, total=False):
     milestones: list[dict[str, Any]]
     draft_grades: list[DraftGradeRow]
 
+    # -- Lab 9/10: grounding and repair evidence --------------------------
+    #: Submission id -> evidence-table dump, built by ``workers`` from the
+    #: records the run actually read. Declared because LangGraph **silently
+    #: discards** any key a node returns that this TypedDict does not declare:
+    #: an undeclared table would leave every grounding check failing closed on
+    #: the next pass, which looks exactly like ungrounded work.
+    evidence_tables: dict[str, Any]
+    #: What the last validation pass found, as ``{"check": name}`` entries, so
+    #: the repair step and the audit trail read one list instead of
+    #: re-deriving the same facts from the diagnosis prose.
+    repair_findings: list[dict[str, Any]]
+
     # -- the plan (doc line 455: locked before work begins) -------------
     #: The ``LockedPlan`` from the ``plan`` skill, as a plain dict so it
     #: checkpoints cleanly.
@@ -284,6 +303,25 @@ class CourseState(TypedDict, total=False):
     #: dashboard shows drift to faculty, so these are surfaced, not hidden.
     drift_findings: list[dict[str, Any]]
     published_path: str
+
+    # -- Lab 14: the domain specialist ------------------------------------
+    #: Which domain specialist assembled this workspace ("theory", "lab",
+    #: "project"). Declared so the value the caller seeded survives the run and
+    #: ``assemble`` does not silently fall back to the default.
+    domain: str
+    #: Whether that specialist succeeded. ``False`` blocks publication even
+    #: with a faculty approval: the reviewer would otherwise be approving a
+    #: workspace the domain expertise never actually shaped.
+    specialist_ok: bool
+    #: True when the domain was unknown or the specialist raised, as opposed to
+    #: ran and reported a problem. The two are different failures and the
+    #: reviewer is told which.
+    domain_error: bool
+    specialist_failed_reason: str
+    specialist_error: str
+    #: One entry per specialist run, appended so a retried run keeps the
+    #: earlier attempt's outcome rather than overwriting the evidence.
+    specialist_audit: Annotated[list[dict[str, Any]], append]
 
     # -- derived ----------------------------------------------------------
     late_flags: list[dict[str, Any]]
@@ -312,6 +350,10 @@ class CourseState(TypedDict, total=False):
     scope_verified_facts: dict[str, Any]
     #: The assignment ids the scope tool found. Same reason as above.
     scope_assignment_ids: list[str]
+    #: An already-verified locked plan dump the run must execute under, when
+    #: the caller supplied one. Declared so ``plan`` receives the seed instead
+    #: of having LangGraph discard it and lock a different scope.
+    authorized_plan: dict[str, Any]
 
     # -- the retry edge (doc line 696) -------------------------------------
     #: Incremented by ``validate`` on every pass. **The bound the doc asks for.**
@@ -352,6 +394,12 @@ DOC_CHECKS: tuple[str, ...] = (
     "late_submissions_flagged_accurately",
     "similarity_score_attached",
     "no_grade_published_without_faculty_approval",
+    #: Lab 9's grounding check, fifth because it is the one that answers
+    #: "is this draft supported by a real source?" rather than "is the number
+    #: in range?". It was implemented in ``validation.CHECKS`` but left out of
+    #: this tuple, so it never ran: a check that is not in the doc's list is a
+    #: comment, not a gate.
+    "evidence_grounded",
 )
 
 #: Doc 2.10 Lab 7's node names, verbatim from its pseudocode (line 696).

@@ -1,0 +1,73 @@
+{
+  "assignment_id": "ASG-01",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-01",
+    "awarded_marks": 17.48,
+    "criterion_ids": [
+      "correctness",
+      "complexity_analysis",
+      "presentation"
+    ],
+    "criterion_marks": {
+      "complexity_analysis": 6.12,
+      "correctness": 8.75,
+      "presentation": 2.62
+    },
+    "expected_late": false,
+    "feedback": "Draft only, pending faculty review. Provisional mark 15.89 of 20 (79%) for DS-A1-S001.",
+    "late": false,
+    "max_marks": 20.0,
+    "similarity_against": "DS-A1-S003",
+    "similarity_flagged": true,
+    "similarity_score": 1.0,
+    "student_name": "Aarav Menon",
+    "submission_id": "DS-A1-S001"
+  },
+  "item_id": "DS-A1-S001",
+  "key": "submission:DS-A1-S001",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-01",
+      "awarded_marks": 15.89,
+      "criterion_ids": [
+        "correctness",
+        "complexity_analysis",
+        "presentation"
+      ],
+      "criterion_marks": {
+        "complexity_analysis": 5.56,
+        "correctness": 7.95,
+        "presentation": 2.38
+      },
+      "expected_late": false,
+      "feedback": "Draft only, pending faculty review. Provisional mark 15.89 of 20 (79%) for DS-A1-S001.",
+      "late": false,
+      "max_marks": 20.0,
+      "similarity_against": "DS-A1-S003",
+      "similarity_flagged": true,
+      "similarity_score": 1.0,
+      "student_name": "Aarav Menon",
+      "submission_id": "DS-A1-S001"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 1.0,
+  "strategy": "generous",
+  "unit": "1"
+}

@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Optional
 
 from course_organizer.graph.state import DOC_CHECKS, DraftGradeRow, ValidationOutcome
+from course_organizer.evidence import CandidateEvidence
 
 #: The rubric tolerance for doc 2.7's first check. Zero: the doc says a draft
 #: grade *never* exceeds the maximum (line 496, line 558), so any headroom would
@@ -204,9 +205,63 @@ def check_no_grade_published_without_faculty_approval(
     )
 
 
-#: The doc's four ``(title, test)`` pairs, in the doc's order. Kept as a mapping
-#: so a caller cannot reorder them by accident and so a missing check is a
-#: KeyError rather than a silently shorter list.
+def check_evidence_grounded(
+    grades: list[DraftGradeRow],
+    evidence_tables: Mapping[str, Any],
+) -> tuple[bool, str]:
+    """Lab 9 check: *every draft grade is grounded in faculty-approved sources*.
+
+    Each grade needs an evidence table whose every item resolves to a real,
+    authorized, in-scope, current source with a quoted excerpt. A missing
+    table, an ungrounded item, or a table with no items fails the grade by
+    name — fail-closed, because an ungrounded candidate must never advance to
+    faculty review looking validated.
+
+    Args:
+        grades: The draft grades under test.
+        evidence_tables: Submission id to :class:`CandidateEvidence` (or its
+            checkpoint-JSON dump — resuming from sqlite yields dicts, and a
+            check that only accepted the model would fail every resumed run).
+
+    Returns:
+        ``(passed, detail)``.
+    """
+    if not grades:
+        return False, "no draft grades to ground; the workers node produced nothing"
+    problems: list[str] = []
+    for row in grades:
+        raw = (evidence_tables or {}).get(row.submission_id)
+        if raw is None:
+            problems.append(
+                f"{row.submission_id} has no evidence table; ground it before review"
+            )
+            continue
+        try:
+            table = raw if isinstance(raw, CandidateEvidence) else CandidateEvidence.model_validate(raw)
+        except Exception:
+            problems.append(
+                f"{row.submission_id} has an unreadable evidence table; ground it before review"
+            )
+            continue
+        if not table.items:
+            problems.append(
+                f"{row.submission_id} has an empty evidence table; ground it before review"
+            )
+            continue
+        if not table.supported:
+            problems.append(
+                f"{row.submission_id} ungrounded: {'; '.join(table.reasons())}"
+            )
+    if problems:
+        return False, "; ".join(problems)
+    return True, (
+        f"all {len(grades)} draft grade(s) grounded in faculty-approved sources"
+    )
+
+
+#: The doc's pairs plus Lab 9's grounding check, in run order. Kept as a
+#: mapping so a caller cannot reorder them by accident and so a missing check
+#: is a KeyError rather than a silently shorter list.
 CHECKS: dict[str, Callable[[Any], tuple[bool, str]]] = {
     "draft_grade_within_rubric_maximum": (
         lambda ctx: check_draft_grade_within_rubric_maximum(
@@ -224,30 +279,38 @@ CHECKS: dict[str, Callable[[Any], tuple[bool, str]]] = {
     "no_grade_published_without_faculty_approval": (
         lambda ctx: check_no_grade_published_without_faculty_approval(ctx.grades)
     ),
+    "evidence_grounded": (
+        lambda ctx: check_evidence_grounded(ctx.grades, ctx.evidence_tables)
+    ),
 }
 
 
 class CheckContext:
-    """Everything the four checks read. A named bundle, so a fifth check is a
+    """Everything the five checks read. A named bundle, so a sixth check is a
     deliberate signature change rather than a silent widening."""
 
-    __slots__ = ("grades", "max_marks_by_assignment", "late_by_submission")
+    __slots__ = ("grades", "max_marks_by_assignment", "late_by_submission", "evidence_tables")
 
     def __init__(
         self,
         grades: list[DraftGradeRow],
         max_marks_by_assignment: Mapping[str, float],
         late_by_submission: Mapping[str, int],
+        evidence_tables: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.grades = grades
         self.max_marks_by_assignment = max_marks_by_assignment
         self.late_by_submission = late_by_submission
+        #: Submission id to evidence table (model or checkpoint dump). ``None``
+        #: means "no tables were built" — the grounding check then fails closed
+        #: rather than passing vacuously.
+        self.evidence_tables = evidence_tables or {}
 
 
 def validate(
     ctx: CheckContext, *, attempt: int = 0
 ) -> ValidationOutcome:
-    """Run doc 2.7's four checks and return the doc's ``Report``.
+    """Run doc 2.7's checks plus Lab 9 grounding and return the doc's ``Report``.
 
     Args:
         ctx: The grades and reference values under test.
@@ -322,6 +385,11 @@ def explain_failure(
             "do not publish; the gate was bypassed. Route the run back to the "
             "gate so a decision is recorded against a named human"
         ),
+        "evidence_grounded": (
+            "ground the affected submission(s): cite a real syllabus unit, "
+            "current note version, rubric criterion, or submission record with "
+            "a quoted excerpt — then revalidate"
+        ),
     }
     remedies = "; ".join(
         fixes.get(name, "inspect the failing unit") for name in failing
@@ -332,7 +400,8 @@ def explain_failure(
     )
 
 
-def next_route(report: ValidationOutcome, *, attempts: int, max_attempts: int) -> str:
+def next_route(report: ValidationOutcome, *, attempts: int, max_attempts: int,
+               unrepairable: bool = False) -> str:
     """Which way the ``validate`` node routes, per doc line 696.
 
     The doc's two edges are ``--fail--> workers`` and ``--pass--> assemble``, and
@@ -351,14 +420,19 @@ def next_route(report: ValidationOutcome, *, attempts: int, max_attempts: int) -
         ``ROUTE_PASS``, or ``ROUTE_ESCALATE``.
 
     Note:
-        The order matters. ``passed`` is tested *before* the budget, because a run
-        that passed on its last permitted attempt must advance. Checking the
-        budget first would fail a run that succeeded exactly at the bound.
+        The order matters. ``passed`` is tested *before* everything else,
+        because a run that passed on its last permitted attempt must advance.
+        ``unrepairable`` comes next: when no finding has a safe automatic
+        repair, retrying would burn budget proving nothing, so the run
+        escalates immediately (Lab 10). It defaults to False, so every
+        existing caller keeps the historical routing.
     """
     from course_organizer.graph.state import ROUTE_ESCALATE, ROUTE_PASS, ROUTE_RETRY
 
     if report.passed:
         return ROUTE_PASS
+    if unrepairable:
+        return ROUTE_ESCALATE
     if attempts >= max_attempts:
         return ROUTE_ESCALATE
     return ROUTE_RETRY

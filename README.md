@@ -22,9 +22,12 @@ architecture, and each lab adds one piece of it.
 | **6** | A · Foundations | Governed runtime — budgets, gates, checkpoint/resume, audit | **Complete, 170/170 tests pass; lab exits 0 on 16/16 checks** |
 | **7** | B · Orchestration | Agentic node graph — the full pipeline, one gate | **Complete, 133 test cases pass; lab exits 0 on 18/18 checks** |
 | **8** | B · Orchestration | Parallel swarm + comparison | **Complete, 104/104 tests pass; lab exits 0 on 27/27 checks** |
+| **9** | C · Applied reliability | Grounding and evidence — typed evidence tables, 5th validation check | **Complete, 24/24 tests pass; Lab 7 CLI 18/18, Lab 8 CLI 27/27, exit 0** |
+| **10** | C · Applied reliability | Self-healing validation — typed findings, targeted repair, budgeted escalation | **Complete, 16/16 tests pass; Lab 7 CLI 18/18 exit 0** |
+| **11** | C · Applied reliability | Tested build factory — typed verdicts, plan identity, hard gate; authorized plan governs execution scope | **Complete, 23/23 tests pass; Lab 7 CLI 18/18 exit 0** |
 
-**785 tests pass, 1 skipped** across Labs 1–8 (no network, no API key). See
-[`docs/lab01.md`](docs/lab01.md) … [`docs/lab08.md`](docs/lab08.md) for the full
+**858 tests pass, 1 skipped** across Labs 1–11 (no network, no API key). See
+[`docs/lab01.md`](docs/lab01.md) … [`docs/lab11.md`](docs/lab11.md) for the full
 write-ups, and [`docs/evidence/`](docs/evidence/) for captured proof.
 
 ---
@@ -85,6 +88,97 @@ cp .env.example .env
 
 Verified on **Windows 11 · Python 3.14.7 · win_amd64**.
 
+---
+
+## Role-Based Web Portal (Labs 1–8 + Identity Layer)
+
+The project now includes a **complete role-based web portal** wrapping the Labs 1–8 backend:
+
+| Role | Capabilities |
+|------|--------------|
+| **Student** | View enrolled courses, submit assignments (write-once), download notes, see **only APPROVED grades**, track progress graphs |
+| **Faculty** | Create assignments, upload notes (versioned), view submission dashboard, enter **draft grades** with similarity flags, **approve & publish** grades |
+| **HoD** | Read-only overview: submission counts, late rates, similarity flags, **approve any draft grade**, audit log viewer |
+
+### 1. Seed Demo Data (run once, idempotent)
+
+```powershell
+# Seed 1 HoD, 2 Faculty, 6 Students across 2 courses
+python -m scripts.seed_demo
+```
+
+This creates the database and these accounts:
+
+| Role | Email | Password |
+|------|-------|----------|
+| HoD | `hod@university.edu` | `hod123` |
+| Faculty 1 (CS201) | `prof.alex@university.edu` | `faculty123` |
+| Faculty 2 (CS202) | `dr.ravi@university.edu` | `faculty123` |
+| Student 1 (CS201) | `alice@student.edu` | `student123` |
+| Student 2 (CS201) | `bob@student.edu` | `student123` |
+| Student 3 (CS201) | `carol@student.edu` | `student123` |
+| Student 4 (CS202) | `david@student.edu` | `student123` |
+| Student 5 (CS202) | `eve@student.edu` | `student123` |
+| Student 6 (CS202) | `frank@student.edu` | `student123` |
+
+> Seeding is **explicit and idempotent** — it never runs automatically on app start or login. Run it whenever you want a fresh demo database.
+
+### 2. Run the API + Web Portal (Two Terminals)
+
+**Terminal 1 — API Server:**
+```powershell
+python -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+API docs at `http://127.0.0.1:8000/docs`
+
+**Terminal 2 — Streamlit UI:**
+```powershell
+cd ui_roles
+python -m streamlit run Home.py --server.port 8501
+```
+UI at `http://localhost:8501` — navigate via sidebar: **Faculty Dashboard**, **Student Dashboard**, **HoD Dashboard**
+
+### 3. Quick Flow Test
+
+1. **Faculty** logs in → **Faculty Dashboard** → **Assignments** → Create assignment for CS201
+2. **Student** (CS201) logs in → **Student Dashboard** → **Assignments** → Submit file
+3. **Faculty** → **Submissions** → Auto-grade or manual grade → **Approve**
+4. **Student** refreshes → Sees **approved grade** in dashboard + progress graph
+5. **HoD** → **HoD Dashboard** → Sees overview, can approve any pending draft grade
+
+### 4. Run Isolation Tests (proves all requirements)
+
+```powershell
+python scripts/test_isolation.py
+```
+
+Verifies: student isolation, faculty isolation, no draft grades to students, HoD read-only.
+
+### 5. Full Test Suite (785 tests)
+
+```powershell
+python -m pytest -o addopts= -q
+```
+
+See [`docs/traceability.md`](docs/traceability.md) for the complete requirement → code → test mapping.
+
+### 6. Traceability Matrix
+
+See [`docs/traceability.md`](docs/traceability.md) for requirement → implementation → test mapping.
+
+### 7. Realtime Enrollment, Google Login & Classroom Import
+
+- **Course catalog & self-enrollment:** students browse `Course Catalog` page and register for any number of courses; faculty create courses freely (page + `POST /courses/`).
+- **Submit → faculty instantly:** submit needs enrollment (clear 403 otherwise); every submit runs the background pipeline (Lab 8 swarm + Lab 2 auto-grade draft), so the grading queue populates in realtime; faculty approves to publish.
+- **Sign in with Google:** dashboards have a Google block (consent → paste code → JWT). Needs `credentials.json` + redirect URI `http://127.0.0.1:8000/google/callback` registered in Google Cloud Console (Classroom API enabled for import).
+- **Classroom import:** faculty `Classroom Import` page — connect, pick a Classroom course, import coursework as assignments and materials as notes (provenance in audit log).
+- **Fresh DB after schema change:** `python -m scripts.reset_db` (deletes `course_organizer.db`, recreates, reseeds). Required once after pulling this update.
+- **Login:** use the **Login** page, pick Student / Faculty / HoD / Admin — you land on that role's dashboard. Auth button (identity + Logout) is top-right on every page. No demo accounts exist; sign up or use Google.
+- **Gmail code by email:** set `SMTP_USER` + `SMTP_APP_PASSWORD` (Gmail App Password) in `.env`; Google-login codes are then emailed, otherwise shown on-screen.
+- **Optional AI Course Assistant (OpenClaw):** off by default. Set `OPENCLAW_ENABLED=true` + `OPENCLAW_GATEWAY_URL` + `OPENCLAW_GATEWAY_TOKEN`, restart the API, then open **Faculty → AI Course Assistant**. Only allowlisted read tools are exposed, every call is audited, and grade/publish requests need explicit human approval. Full setup and troubleshooting: [`docs/openclaw_integration.md`](docs/openclaw_integration.md).
+
+---
+
 ### Why `mcp` is pinned to 1.x
 
 ```
@@ -140,7 +234,14 @@ python -m course_organizer.labs.lab08_parallel_swarm
 # E2E (auto-approve at gate)
 python scripts/run_full_e2e.py
 python scripts/run_swarm_e2e.py
+
+# Lab 14 capstone demo - holds at the real faculty gate; approve/refuse explicitly
+python -m scripts.run_lab14_demo --domain lab
+python -m scripts.run_lab14_demo --resume demo-lab-<id> --decision approve
 ```
+
+See [docs/lab14_phase4_demo.md](docs/lab14_phase4_demo.md) for the full
+end-to-end walkthrough (CLI, API, and faculty dashboard).
 
 ```powershell
 # notebooks (the deliverable format)

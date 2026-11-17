@@ -1,0 +1,99 @@
+{
+  "course_code": "CS201",
+  "course_name": "Data Structures",
+  "assignments": [
+    {
+      "assignment_id": "ASG-01",
+      "course_code": "CS201",
+      "unit": "1",
+      "title": "Linked List Operations",
+      "brief": "Implement a singly linked list supporting append, insert-after, delete-after and reversal. Provide the operations for a doubly linked list as a separate implementation and comment on the memory and asymptotic trade-off between the two.",
+      "release_date": "2026-10-06T00:00:00+00:00",
+      "due_date": "2026-10-20T23:59:00+00:00",
+      "max_marks": 20,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "All required operations implemented and correct on non-trivial inputs.",
+          "max_marks": 8.0,
+          "weight": 0.4
+        },
+        {
+          "criterion_id": "complexity_analysis",
+          "description": "Time and space cost stated for every operation, with justification.",
+          "max_marks": 8.0,
+          "weight": 0.4
+        },
+        {
+          "criterion_id": "presentation",
+          "description": "Readable code, clear naming, and the requested trade-off discussion.",
+          "max_marks": 4.0,
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "assignment_id": "ASG-02",
+      "course_code": "CS201",
+      "unit": "3",
+      "title": "Binary Search Tree Implementation",
+      "brief": "Implement a binary search tree with insertion, search, minimum, in-order traversal and the full three-case deletion. Include a test set that demonstrates what happens when keys are inserted in sorted order, and relate the observed behaviour to the tree's height.",
+      "release_date": "2026-10-20T00:00:00+00:00",
+      "due_date": "2026-11-03T23:59:00+00:00",
+      "max_marks": 20,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "Insertion, search, minimum, traversal and all three deletion cases correct.",
+          "max_marks": 10.0,
+          "weight": 0.5
+        },
+        {
+          "criterion_id": "tests",
+          "description": "Test set covers sorted insertion and the degenerate-height case.",
+          "max_marks": 6.0,
+          "weight": 0.3
+        },
+        {
+          "criterion_id": "documentation",
+          "description": "Complexity claims stated and justified per operation.",
+          "max_marks": 4.0,
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "assignment_id": "ASG-03",
+      "course_code": "CS201",
+      "unit": "5",
+      "title": "Graph Shortest Paths",
+      "brief": "Given a weighted directed graph, compute single-source shortest paths. Implement Dijkstra's algorithm and show why it fails when a negative edge is present. Contrast the result with a breadth-first search on the unweighted version of the same graph.",
+      "release_date": "2026-11-03T00:00:00+00:00",
+      "due_date": "2026-11-17T23:59:00+00:00",
+      "max_marks": 25,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "Dijkstra correct on all non-negative instances; failure on the negative instance correctly explained.",
+          "max_marks": 12.0,
+          "weight": 0.48
+        },
+        {
+          "criterion_id": "complexity",
+          "description": "Complexity stated for Dijkstra and for the BFS contrast.",
+          "max_marks": 8.0,
+          "weight": 0.32
+        },
+        {
+          "criterion_id": "report",
+          "description": "Clear written report tying implementation to the cut-property justification.",
+          "max_marks": 5.0,
+          "weight": 0.2
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "assignment_id": "ASG-03",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-03",
+    "awarded_marks": 18.84,
+    "criterion_ids": [
+      "correctness",
+      "complexity",
+      "report"
+    ],
+    "criterion_marks": {
+      "complexity": 6.6,
+      "correctness": 9.41,
+      "report": 2.83
+    },
+    "expected_late": true,
+    "feedback": "Draft only, pending faculty review. Provisional mark 17.13 of 25 (69%) for DS-A3-S008.",
+    "late": true,
+    "max_marks": 25.0,
+    "similarity_against": "DS-A3-S007",
+    "similarity_flagged": false,
+    "similarity_score": 0.0234,
+    "student_name": "Ananya Bose",
+    "submission_id": "DS-A3-S008"
+  },
+  "item_id": "DS-A3-S008",
+  "key": "submission:DS-A3-S008",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-03",
+      "awarded_marks": 17.13,
+      "criterion_ids": [
+        "correctness",
+        "complexity",
+        "report"
+      ],
+      "criterion_marks": {
+        "complexity": 6.0,
+        "correctness": 8.56,
+        "report": 2.57
+      },
+      "expected_late": true,
+      "feedback": "Draft only, pending faculty review. Provisional mark 17.13 of 25 (69%) for DS-A3-S008.",
+      "late": true,
+      "max_marks": 25.0,
+      "similarity_against": "DS-A3-S007",
+      "similarity_flagged": false,
+      "similarity_score": 0.0234,
+      "student_name": "Ananya Bose",
+      "submission_id": "DS-A3-S008"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 1.0,
+  "strategy": "generous",
+  "unit": "5"
+}

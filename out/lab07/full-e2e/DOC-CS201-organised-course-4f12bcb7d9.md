@@ -1,7 +1,7 @@
 ---
 Published by: course_faculty
 Decision    : approve
-At           : 2026-10-02T12:04:18.758627+00:00
+At           : 2026-10-24T16:16:51.076202+00:00
 Course       : CS201 Data Structures
 ---
 
@@ -23,7 +23,7 @@ Audience    : course_faculty
 Plan sha256      : 6d88f04886fa3e7a10fcfaf50bf00952c887cd6422ddcf0ee7dfc30e011f3a0a
 Obligations      : 16
 Obligation kinds : cover_unit, distribute_assignment, ground_facts, track_milestones, verify_step
-Locked at        : 2026-10-02T12:04:18+00:00
+Locked at        : 2026-10-24T16:16:51+00:00
 
 <!-- data: {"integrity": "verified", "obligation_count": 16, "obligation_kinds": ["cover_unit", "distribute_assignment", "ground_facts", "track_milestones", "verify_step"], "plan_sha256": "6d88f04886fa3e7a10fcfaf50bf00952c887cd6422ddcf0ee7dfc30e011f3a0a"} -->
 
@@ -77,7 +77,7 @@ None. Every obligation in the locked plan was met.
 
 Approver : course_faculty
 Status   : READY FOR REVIEW
-Approved : yes - course_faculty (approve) at 2026-10-02T12:04:18.758627+00:00
+Approved : yes - course_faculty (approve) at 2026-10-24T16:16:51.076202+00:00
 Published: yes - grades below carry the approver's name
 Rule     : Document 2.12: no grade, feedback or published artefact advances without faculty approval.
 

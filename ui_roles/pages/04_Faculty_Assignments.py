@@ -5,37 +5,61 @@ import requests
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ui_helpers import API, download_button, live_refresh, safe_list
+from ui_helpers import topbar
+topbar()
+from ui_helpers import API, download_button, empty_state, live_refresh, metric_card
 
-st.title("📝 Assignments")
+st.title("Assignments")
+st.caption("Create assignments and review submissions.")
 
-if st.session_state.get("role") not in ("faculty", "admin") or not st.session_state.get("token"):
+if st.session_state.get("role") != "faculty" or not st.session_state.get("token"):
     st.warning("Login as Faculty first (Faculty Dashboard page).")
     st.stop()
 h = {"Authorization": f"Bearer {st.session_state['token']}"}
 live_refresh("fac_assign")
 
-items = safe_list(requests.get(f"{API}/assignments/", headers=h, timeout=10))
-subs = safe_list(requests.get(f"{API}/submissions/", headers=h, timeout=10))
-counts: dict = {}
-for s in subs:
-    counts[s.get("assignment_id")] = counts.get(s.get("assignment_id"), 0) + 1
+# Get faculty's own assignments
+try:
+    r = requests.get(f"{API}/assignments/", headers=h, timeout=10)
+    if r.ok:
+        items = r.json()
+    else:
+        st.error(f"{r.status_code}: {r.text[:300]}")
+        items = None
+except Exception as e:
+    st.error(str(e)[:300])
+    items = None
 
-if not items:
-    st.info("No assignments yet. Create one below.")
-for a in items:
-    aid = a["id"]
-    with st.expander(f"📌 #{aid} {a.get('title')} · {a.get('max_marks')} marks · 📥 {counts.get(aid, 0)} submissions (live)", expanded=False):
-        st.write(f"**Course:** {a.get('course_code')} · **Unit:** {a.get('unit_number') or '-'} · **Due:** {a.get('due_date') or '—'}")
-        if a.get("description"):
-            st.write(a["description"])
-        if a.get("rubric_text"):
-            st.caption(f"Rubric: {a['rubric_text'][:300]}")
-        if a.get("file_name"):
-            download_button("⬇ Open / download brief", "assignments", aid, a.get("file_name"), f"asg_{aid}")
+# Get submission counts for faculty's assignments
+counts: dict = {}
+try:
+    sr = requests.get(f"{API}/faculty/submissions", headers=h, timeout=10)
+    if sr.ok:
+        for s in (sr.json() or []):
+            aid = s.get("assignment_id")
+            counts[aid] = counts.get(aid, 0) + 1
+except Exception as e:
+    st.error(str(e)[:300])
+
+if items is not None and not items:
+    empty_state("No assignments yet. Create one below.", title="Assignments")
+elif items:
+    metric_card("Assignments", len(items))
+    for a in items:
+        aid = a["id"]
+        with st.expander(f"#{aid} {a.get('title')} — {a.get('max_marks')} marks — {counts.get(aid, 0)} submissions", expanded=False):
+            st.write(f"**Course:** {a.get('course_code')} · **Unit:** {a.get('unit_number') or '-'} · **Due:** {a.get('due_date') or '—'}")
+            if a.get("description"):
+                st.write(a["description"])
+            if a.get("rubric_text"):
+                st.caption(f"Rubric: {a['rubric_text'][:300]}")
+            if a.get("file_name"):
+                download_button("Open / download brief", "assignments", aid, a.get("file_name"), f"asg_{aid}")
+            else:
+                st.caption("No brief file attached.")
 
 st.divider()
-st.subheader("➕ Create Assignment")
+st.subheader("Create Assignment")
 with st.form("a"):
     cc = st.text_input("Course", "CS201")
     un = st.text_input("Unit")
@@ -61,6 +85,9 @@ with st.form("a"):
                     fd["rubric_text"] = rb.strip()
                 files = {"file": (f.name, f.getvalue())} if f else None
                 fr = requests.post(f"{API}/assignments/", headers={"Authorization": h["Authorization"]}, data=fd, files=files, timeout=30)
-                st.success("Created ✅") if fr.ok else st.error(f"{fr.status_code}: {fr.text[:500]}")
+                if fr.ok:
+                    st.success("Created.")
+                else:
+                    st.error(f"{fr.status_code}: {fr.text[:500]}")
             except Exception as ex:
                 st.error(str(ex)[:500])

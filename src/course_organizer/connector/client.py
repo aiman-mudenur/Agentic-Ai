@@ -739,7 +739,11 @@ def server_command(
     # has already resolved it, so reuse the parent's sys.path entries rather
     # than assuming this is an installed (pip -e) layout.
     child_env: dict[str, str] = {}
-    package_root = str(Path(__file__).resolve().parents[1])
+    # client.py lives at <root>/src/course_organizer/connector/client.py, so
+    # parents[2] is <root>/src -- the directory that must be importable for
+    # `python -m course_organizer.connector.mcp_server` to resolve. (parents[1]
+    # is the package directory itself, which cannot import `course_organizer`.)
+    package_root = str(Path(__file__).resolve().parents[2])
     existing = os.environ.get("PYTHONPATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
     if package_root not in parts:

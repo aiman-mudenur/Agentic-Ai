@@ -1,0 +1,184 @@
+{
+  "course_code": "CS201",
+  "course_name": "Data Structures",
+  "term": "2026 - Semester I",
+  "units": [
+    {
+      "unit": "1",
+      "title": "Arrays and Linked Lists",
+      "topics": ["arrays", "singly linked lists", "doubly linked lists"]
+    },
+    {
+      "unit": "2",
+      "title": "Stacks and Queues",
+      "topics": ["stacks", "queues", "deques", "applications"]
+    },
+    {
+      "unit": "3",
+      "title": "Trees and Binary Search Trees",
+      "topics": ["binary search trees", "traversal", "balanced trees"]
+    },
+    {
+      "unit": "4",
+      "title": "Hashing and Hash Tables",
+      "topics": ["hash functions", "collision resolution", "load factor"]
+    },
+    {
+      "unit": "5",
+      "title": "Graphs and Traversal",
+      "topics": ["adjacency representations", "BFS", "DFS", "shortest paths"]
+    }
+  ],
+  "notes": [
+    {
+      "note_id": "ds-u1-linked-lists",
+      "title": "Singly and Doubly Linked Lists",
+      "kind": "lecture_notes",
+      "unit": "1",
+      "topic": "Linked lists",
+      "tags": ["linked-list", "pointers", "memory", "traversal"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-10T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 1.",
+          "content": "A linked list stores elements in individually allocated nodes joined by pointers. Each node holds a payload and a link to its successor. The head pointer is the only entry point, so the structure is a recursive datatype: a list is either the empty list or a node followed by a list.\n\nInsertion at the head costs O(1) because no traversal is required: allocate the node, point it at the current head, and move the head. Insertion after a given node is also O(1) once that node is in hand. Deletion is likewise O(1) given the predecessor, but finding the predecessor in a singly linked list costs O(n).\n\nA doubly linked list gives every node both a next and a prev link. This doubles the pointer bookkeeping but reduces deletion of a node given only that node from O(n) to O(1), because the predecessor can be reached directly. The extra pointer per node is the price of that locality.\n\nThe memory cost of a linked list is not uniform. Because nodes are allocated separately, they are scattered across the heap and traversal has poor spatial locality. An array stores its elements contiguously, so a sequential scan is cache friendly. This is the central practical trade-off between the two representations, and it matters more than the asymptotic bounds for most workloads."
+        },
+        {
+          "version": 2,
+          "author": "Course Faculty",
+          "created_at": "2026-08-24T09:00:00+00:00",
+          "changelog": "Added amortised analysis of repeated head operations and a worked cache-locality example.",
+          "content": "A linked list stores elements in individually allocated nodes joined by pointers. Each node holds a payload and a link to its successor. The head pointer is the only entry point, so the structure is a recursive datatype: a list is either the empty list or a node followed by a list.\n\nInsertion at the head costs O(1) because no traversal is required: allocate the node, point it at the current head, and move the head. Insertion after a given node is also O(1) once that node is in hand. Deletion is likewise O(1) given the predecessor, but finding the predecessor in a singly linked list costs O(n).\n\nA doubly linked list gives every node both a next and a prev link. This doubles the pointer bookkeeping but reduces deletion of a node given only that node from O(n) to O(1), because the predecessor can be reached directly. The extra pointer per node is the price of that locality.\n\nThe memory cost of a linked list is not uniform. Because nodes are allocated separately, they are scattered across the heap and traversal has poor spatial locality. An array stores its elements contiguously, so a sequential scan is cache friendly. This is the central practical trade-off between the two representations, and it matters more than the asymptotic bounds for most workloads.\n\nRepeated head insertion is amortised O(1) even though a single insertion may need to grow a buffer. If an array of capacity c is full, doubling it to 2c costs O(c), but that cost is spread over the c insertions since the last growth. Over n insertions the total copying work is bounded by 1 + 2 + 4 + ... + c < 2n, so the amortised cost per insertion is constant. The doubling factor is the important choice: growing by a constant factor gives amortised O(1), while growing by a fixed additive amount gives amortised O(n).\n\nWorked locality example: scanning a 64 MiB array of 8-byte integers touches memory sequentially, so a modern prefetcher sustains near peak bandwidth. Scanning the same 8 million integers stored as singly linked nodes may touch a cache line per node, because each node is a separate allocation and the pointer chase defeats the prefetcher. The asymptotic cost is identical, O(n), but the wall-clock difference is routinely an order of magnitude."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u1-arrays",
+      "title": "Array Storage and Resizing",
+      "kind": "lecture_notes",
+      "unit": "1",
+      "topic": "Arrays",
+      "tags": ["arrays", "contiguous", "resizing", "cache"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-11T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 1.",
+          "content": "An array stores elements of a fixed type in a contiguous block of memory. Contiguity gives two guarantees that pointer-based structures cannot: constant time indexed access by arithmetic on the base address, and spatial locality during sequential traversal.\n\nThe cost is that the size is fixed at allocation time in the general case. Dynamic arrays solve this by over-allocating and tracking both capacity and length. Appending when length equals capacity triggers a grow operation. The standard choice is to multiply capacity by a constant factor, usually two, which yields amortised O(1) appends.\n\nViews of an array over a sub-range, such as a subarray or a slice, avoid copying. They alias the same memory, so a write through the view is visible through the original. When an interface must own its data, it copies; when it must be cheap and read-mostly, it aliases. Choosing wrongly in either direction is a common source of subtle bugs."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u2-stacks-queues",
+      "title": "Stacks, Queues and Deques",
+      "kind": "lecture_notes",
+      "unit": "2",
+      "topic": "Stacks and queues",
+      "tags": ["stack", "queue", "deque", "applications", "traversal"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-18T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 2.",
+          "content": "A stack is a last-in-first-out discipline. Push and pop both operate at one end, the top, so both are O(1) with an array or a linked list. A queue is first-in-first-out: enqueue at the rear, dequeue at the front.\n\nA naive array-backed queue that always grows at the rear leaks space, because the front advances while the rear keeps advancing. Two remedies exist. Wrap the indices around the end of the array, turning it into a circular buffer. Or keep a head index and periodically compact the queue down to the front. A circular buffer is the better answer when the maximum size is known.\n\nThe double-ended queue, or deque, supports insertion and removal at both ends and generalises both structures. It is the right abstraction when an algorithm needs to push to one end and pop from the other, such as the monotonic queue trick for sliding-window maxima.\n\nStacks and queues are not merely exam topics; they are the natural shapes for several real computations. Depth-first search is stack-shaped. Breadth-first search is queue-shaped. The call stack is a machine-level stack. A breadth-first traversal needs a queue to visit nodes in nondecreasing distance order, while depth-first needs a stack to exhaust one subtree before moving to the next."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u3-bst",
+      "title": "Binary Search Trees",
+      "kind": "lecture_notes",
+      "unit": "3",
+      "topic": "Binary search trees",
+      "tags": ["bst", "trees", "search", "insertion", "deletion"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-09-01T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 3.",
+          "content": "A binary search tree stores keys so that every key in a node's left subtree is smaller and every key in its right subtree is larger. The invariant is what makes search cheap: at each node you compare once and discard an entire subtree.\n\nSearch, insertion and minimum are all O(h), where h is the height of the tree. The height is the entire story. A balanced tree of n nodes has height about log2(n), so operations are logarithmic. A degenerate tree, which is what you get when keys arrive in sorted order, has height n and gives O(n) operations. Inserting n sorted keys into an ordinary binary search tree produces a linked list wearing a tree's syntax.\n\nDeletion has three cases. If the node is a leaf, remove it. If it has one child, splice that child into its place. If it has two children, replace the node's key with its in-order successor, the smallest key in the right subtree, then delete that successor, which by construction has at most one child. The successor choice is not arbitrary: using the predecessor, the largest key in the left subtree, is equally correct and the two must be handled symmetrically in code."
+        },
+        {
+          "version": 2,
+          "author": "Course Faculty",
+          "created_at": "2026-09-15T09:00:00+00:00",
+          "changelog": "Corrected the deletion section: v1 described the two-child case as swapping with either successor or predecessor without stating which one is guaranteed to have at most one child. Added self-balancing families.",
+          "content": "A binary search tree stores keys so that every key in a node's left subtree is smaller and every key in its right subtree is larger. The invariant is what makes search cheap: at each node you compare once and discard an entire subtree.\n\nSearch, insertion and minimum are all O(h), where h is the height of the tree. The height is the entire story. A balanced tree of n nodes has height about log2(n), so operations are logarithmic. A degenerate tree, which is what you get when keys arrive in sorted order, has height n and gives O(n) operations. Inserting n sorted keys into an ordinary binary search tree produces a linked list wearing a tree's syntax.\n\nDeletion has three cases. If the node is a leaf, remove it. If it has one child, splice that child into its place. If it has two children, replace the node's key with its in-order successor, the smallest key in the right subtree, then delete that successor. The successor is guaranteed to have no left child, so it has at most one child and falls into one of the two easier cases. Using the in-order predecessor, the largest key in the left subtree, is equally correct and is symmetric: the predecessor is guaranteed to have no right child. The two must be handled symmetrically in code, because an asymmetric implementation is a reliable source of bugs.\n\nSelf-balancing families guarantee logarithmic height without the caller doing anything. An AVL tree enforces a strict balance condition at every node and gives shorter trees at the cost of more rotations on update. A red-black tree relaxes the condition to allow a slightly greater height, performs fewer rotations, and is the usual choice for library implementations. A treap is a randomised alternative whose expected height is logarithmic, with the strong advantage that it needs no rebalancing code at all."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u3-traversal",
+      "title": "Tree Traversal: In, Pre, Post and Level Order",
+      "kind": "reference",
+      "unit": "3",
+      "topic": "Traversal",
+      "tags": ["traversal", "recursion", "in-order", "level-order"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-09-02T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 3.",
+          "content": "The four standard traversals differ only in when a node is visited relative to its subtrees. In-order visits left, then node, then right, and yields the sorted key sequence because of the search-tree invariant. Pre-order visits node, then left, then right. Post-order visits left, then right, then node. Level-order visits nodes breadth first, row by row.\n\nPre-order and post-order are the two you actually need for real work. Pre-order on an expression tree writes the fully parenthesised form, because the operator must precede its operands. Post-order does the same for a non-destructive rewrite, because the children must be rewritten before the parent consumes their results.\n\nAll three recursive traversals run in O(n) time and use O(h) stack space, where h is the height. Level-order needs a queue rather than the call stack and therefore uses O(w) space, where w is the tree's maximum width. On a degenerate tree, h is n and the recursive traversals can overflow the call stack; an explicit-stack iterative form avoids that failure at the cost of a little clarity."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u4-hashing",
+      "title": "Hash Functions and Collision Resolution",
+      "kind": "lecture_notes",
+      "unit": "4",
+      "topic": "Hashing",
+      "tags": ["hashing", "collisions", "chaining", "open-addressing", "load-factor"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-09-22T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 4.",
+          "content": "A hash table maps keys to array slots through a hash function. When two distinct keys hash to the same slot, a collision has occurred, and the table must resolve it. Collisions are not a rare edge case; they are guaranteed by the pigeonhole principle as soon as there are more keys than slots.\n\nSeparate chaining stores a collection at each slot, usually a linked list or a dynamic array. Lookup costs O(1) expected, degrading to O(n) when every key lands in one bucket. Open addressing stores the entry directly in the array and probes for a free slot on collision, using linear probing, quadratic probing or double hashing. Open addressing uses less memory and benefits from better locality, but it degrades badly as the load factor approaches one, and deletion requires tombstones rather than simply clearing the slot.\n\nThe load factor, the ratio of entries to slots, is the knob that governs performance. Below roughly 0.5 open addressing is fast. Above about 0.75 the probe sequences become long and the effective cost climbs steeply. Resizing at a fixed threshold keeps the expected cost constant amortised.\n\nThe worst case remains O(n) for any hash table, because an adversary can choose keys that collide. Hash tables are for average-case performance, not worst-case guarantees. If a worst-case guarantee is required, use a balanced search tree, which pays logarithmic cost consistently."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u5-graphs",
+      "title": "Graph Representations",
+      "kind": "lecture_notes",
+      "unit": "5",
+      "topic": "Graph representations",
+      "tags": ["graphs", "adjacency-matrix", "adjacency-list", "representation"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-10-06T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 5.",
+          "content": "A graph is a set of vertices joined by edges. Two representations dominate. An adjacency matrix stores a boolean or weight for every ordered pair of vertices, giving O(1) edge-existence queries and O(V^2) space. An adjacency list stores, for each vertex, the set of its neighbours, giving O(V + E) space.\n\nThe choice is a space-versus-query-time trade-off with a crossover at E around V. Below that, the matrix's O(V^2) storage is smaller than the list's O(V + E). Above it, the list wins. An edge-list representation, storing pairs of endpoint indices, is the most compact but requires a scan to answer adjacency queries.\n\nDirected graphs store one entry per edge; undirected graphs store each edge twice so that both adjacency lists can be built without a reverse lookup. Undirected graphs also admit a union-find structure for connectivity questions, which is dramatically faster than traversal when only components matter."
+        }
+      ]
+    },
+    {
+      "note_id": "ds-u5-shortest-paths",
+      "title": "BFS, DFS and Shortest Paths",
+      "kind": "lecture_notes",
+      "unit": "5",
+      "topic": "Shortest paths",
+      "tags": ["bfs", "dfs", "dijkstra", "shortest-path", "weighted"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-10-07T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 5.",
+          "content": "Breadth-first search explores vertices in order of distance from the source. On an unweighted graph it therefore yields shortest paths, and its cost is O(V + E). Depth-first search follows one branch as far as it can before backtracking, visits each vertex once, and finds paths but not necessarily the shortest ones.\n\nOn a weighted graph, breadth-first is no longer correct, because a longer path in edges may be shorter in weight. Dijkstra's algorithm restores the guarantee: maintain a priority queue keyed on tentative distance, and settle the minimum each iteration. It runs in O((V + E) log V) with a binary heap. It requires non-negative edge weights. A negative edge breaks it, because a settled vertex could later be improved.\n\nDijkstra therefore does not apply to a general weighted graph. For graphs with negative edges, Bellman-Ford relaxes every edge V-1 times in O(V * E), and detects a negative cycle when an extra pass still relaxes something. An undirected graph with any negative edge has a negative cycle and no finite shortest paths at all.\n\nDijkstra's greedy step is justified by the cut property: the minimum tentative distance among unsettled vertices is final, because no path through an unsettled vertex could improve it, given non-negative weights. That justification is what makes the greedy choice correct here, unlike in most greedy algorithms."
+        }
+      ]
+    }
+  ]
+}

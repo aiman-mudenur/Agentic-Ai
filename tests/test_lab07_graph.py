@@ -205,14 +205,14 @@ def test_build_nodes_supplies_every_node_the_builder_wires(compiled):
 
 
 # ---------------------------------------------------------------------------
-# Doc 2.7's four checks
+# Doc 2.7's checks plus Lab 9 grounding
 # ---------------------------------------------------------------------------
 
 
-def test_all_four_doc_checks_are_implemented():
+def test_all_five_doc_checks_are_implemented():
     assert missing_checks() == ()
     assert tuple(CHECKS) == DOC_CHECKS
-    assert len(DOC_CHECKS) == 4
+    assert len(DOC_CHECKS) == 5
 
 
 def test_the_rubric_tolerance_is_zero_because_the_doc_says_never():
@@ -228,6 +228,37 @@ def _row(**kw):
     )
     base.update(kw)
     return DraftGradeRow(**base)
+
+
+def _grounded_table():
+    """A genuinely grounded table for the _row() fixture grade (S1/A1).
+
+    Built by the real Lab 9 builder from synthetic but fully-specified
+    sources — the same function the validate node calls, so this passing
+    report proves the contract rather than assuming it.
+    """
+    from course_organizer.evidence import SourceIndex, build_grade_evidence
+
+    index = SourceIndex(
+        units={"1": {"course_code": "CS201", "note_count": 2}},
+        notes={},
+        rubrics={"A1": {
+            "course_code": "CS201", "unit": "1",
+            "criteria": [
+                {"description": "correctness", "max_marks": 10},
+                {"description": "presentation", "max_marks": 10},
+            ],
+        }},
+        submissions={"S1": {
+            "student_id": "STU1", "course_code": "CS201", "unit": "1",
+            "status": "submitted", "submitted_at": "2026-01-01T00:00:00+00:00",
+        }},
+    )
+    table = build_grade_evidence(
+        _row(similarity_score=0.1).model_dump(), index,
+        course_scope="CS201", unit_scope=["1"])
+    assert table.supported, table.reasons()
+    return table.model_dump(mode="json")
 
 
 def test_a_grade_at_exactly_the_maximum_is_allowed():
@@ -354,8 +385,9 @@ def test_a_diagnosis_names_the_check_the_value_and_the_remedy():
 def test_a_passing_report_carries_no_diagnosis():
     from course_organizer.graph.validation import validate
 
+    table = _grounded_table()
     ctx = CheckContext(
-        [_row(similarity_score=0.1)], {"A1": 20.0}, {}
+        [_row(similarity_score=0.1)], {"A1": 20.0}, {}, {"S1": table},
     )
     report = validate(ctx, attempt=1)
     assert report.passed

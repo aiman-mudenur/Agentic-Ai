@@ -1,0 +1,72 @@
+{
+  "assignment_id": "ASG-03",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-03",
+    "awarded_marks": 11.01,
+    "criterion_ids": [
+      "correctness",
+      "complexity",
+      "report"
+    ],
+    "criterion_marks": {
+      "complexity": 3.85,
+      "correctness": 5.5
+    },
+    "expected_late": false,
+    "feedback": "Draft only, pending faculty review. Provisional mark 11.01 of 25 (44%) for DS-A3-S007.",
+    "late": false,
+    "max_marks": 25.0,
+    "similarity_against": "",
+    "similarity_flagged": false,
+    "similarity_score": null,
+    "student_name": "Vivaan Rao",
+    "submission_id": "DS-A3-S007"
+  },
+  "item_id": "DS-A3-S007",
+  "key": "submission:DS-A3-S007",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-03",
+      "awarded_marks": 11.01,
+      "criterion_ids": [
+        "correctness",
+        "complexity",
+        "report"
+      ],
+      "criterion_marks": {
+        "complexity": 3.85,
+        "correctness": 5.5,
+        "report": 1.66
+      },
+      "expected_late": false,
+      "feedback": "Draft only, pending faculty review. Provisional mark 11.01 of 25 (44%) for DS-A3-S007.",
+      "late": false,
+      "max_marks": 25.0,
+      "similarity_against": "DS-A3-S008",
+      "similarity_flagged": false,
+      "similarity_score": 0.0234,
+      "student_name": "Vivaan Rao",
+      "submission_id": "DS-A3-S007"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 0.2,
+  "strategy": "sparse",
+  "unit": "5"
+}

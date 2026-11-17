@@ -1,0 +1,143 @@
+{
+  "course_code": "DBMS402",
+  "course_name": "Database Management Systems",
+  "term": "2026 - Semester I",
+  "units": [
+    {
+      "unit": "1",
+      "title": "The Relational Model and SQL",
+      "topics": ["relations", "keys", "SQL basics", "joins"]
+    },
+    {
+      "unit": "2",
+      "title": "Normalisation",
+      "topics": ["functional dependencies", "1NF-3NF", "BCNF", "decomposition"]
+    },
+    {
+      "unit": "3",
+      "title": "Transactions and Concurrency Control",
+      "topics": ["ACID", "isolation levels", "locking", "deadlock"]
+    },
+    {
+      "unit": "4",
+      "title": "Indexing and Query Optimisation",
+      "topics": ["B-trees", "query plans", "cost estimation"]
+    },
+    {
+      "unit": "5",
+      "title": "Distributed Databases and NoSQL",
+      "topics": ["replication", "sharding", "CAP", "document stores"]
+    }
+  ],
+  "notes": [
+    {
+      "note_id": "dbms-u1-sql",
+      "title": "Relations, Keys and Basic SQL",
+      "kind": "lecture_notes",
+      "unit": "1",
+      "topic": "Relational model",
+      "tags": ["relational", "keys", "sql", "joins", "constraints"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-12T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 1.",
+          "content": "A relation is a set of tuples over a fixed schema. The schema names the attributes and their domains; the relation is a set of rows conforming to it. Because it is a set, the mathematical relation has no duplicates and no order. SQL tables are bags by default, so the two differ unless DISTINCT or ORDER BY is used, and that difference is a frequent source of wrong answers.\n\nA candidate key is a minimal set of attributes that functionally determines all others. The primary key is the candidate key chosen to be referenced by foreign keys. Declaring the primary key has two effects: it enforces uniqueness and not-null, and it creates an index, so the choice should follow access patterns rather than convenience.\n\nA foreign key constrains values to reference existing primary keys, or to be null when the reference is optional. Referential integrity is what stops orphaned rows accumulating, and it is enforced by the database rather than by convention.\n\nA join combines relations on a predicate. An inner join keeps only matching rows. A left outer join keeps every row from the left relation, null-extending unmatched rows. The distinction matters most exactly where it is easiest to get wrong: aggregate after joining, not before, because a left join can multiply rows and inflate SUM and COUNT."
+        },
+        {
+          "version": 2,
+          "author": "Course Faculty",
+          "created_at": "2026-08-26T09:00:00+00:00",
+          "changelog": "Added the aggregate-after-join pitfall with a worked row-count example, and a NULL comparison subsection.",
+          "content": "A relation is a set of tuples over a fixed schema. The schema names the attributes and their domains; the relation is a set of rows conforming to it. Because it is a set, the mathematical relation has no duplicates and no order. SQL tables are bags by default, so the two differ unless DISTINCT or ORDER BY is used, and that difference is a frequent source of wrong answers.\n\nA candidate key is a minimal set of attributes that functionally determines all others. The primary key is the candidate key chosen to be referenced by foreign keys. Declaring the primary key has two effects: it enforces uniqueness and not-null, and it creates an index, so the choice should follow access patterns rather than convenience.\n\nA foreign key constrains values to reference existing primary keys, or to be null when the reference is optional. Referential integrity is what stops orphaned rows accumulating, and it is enforced by the database rather than by convention.\n\nA join combines relations on a predicate. An inner join keeps only matching rows. A left outer join keeps every row from the left relation, null-extending unmatched rows. The distinction matters most exactly where it is easiest to get wrong: aggregate after joining, not before, because a left join can multiply rows and inflate SUM and COUNT.\n\nWorked example of the row-multiplication trap: orders has three rows for a single customer, and line_items has four rows for one of those orders. Joining orders to line_items on order_id yields four rows for that customer, not three. Summing orders.amount after the join multiplies that one order's amount by four. The fix is to aggregate in a subquery first, then join the already-aggregated result, or to aggregate by the grouping key after the join. The first form is usually clearer because it makes the level of each aggregation explicit.\n\nNULL means unknown, not empty and not zero. Any comparison with NULL using = or < yields unknown rather than true or false, so a WHERE clause silently drops such rows. IS NULL and IS NOT NULL are the correct predicates. Counting with COUNT(column) skips nulls while COUNT(*) counts rows, so the two can disagree on the same table."
+        }
+      ]
+    },
+    {
+      "note_id": "dbms-u2-normalisation",
+      "title": "Functional Dependencies and Normal Forms",
+      "kind": "lecture_notes",
+      "unit": "2",
+      "topic": "Normalisation",
+      "tags": ["normalisation", "functional-dependency", "3nf", "bcnf", "decomposition"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-19T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 2.",
+          "content": "A functional dependency X -> Y states that every two rows agreeing on X agree on Y. Normalisation is the process of restructuring a relation so that each fact is stored once, which removes update anomalies and the redundancy that causes them.\n\nFirst normal form requires atomic attribute values. A repeating group, such as several phone numbers in one column, violates it and must be split into rows.\n\nSecond normal form requires first normal form and that every non-prime attribute depends on the whole of every candidate key, not merely part of it. It matters only for relations with composite keys, which is why it is often trivially satisfied in practice.\n\nThird normal form requires second normal form and that every non-prime attribute depends only on candidate keys, not on other non-prime attributes. A transitive dependency such as course_code -> course_name where course_code -> student_id and student_id -> ... is the violation 3NF removes.\n\nBoyce-Codd normal form strengthens 3NF by requiring that every determinant is a candidate key. BCNF is strictly stronger and is the right target when designing from scratch.\n\nDecomposition must be lossless and must preserve dependencies. Lossless means the join of the decomposed relations reconstructs the original exactly, with no spurious tuples and no lost ones; it is guaranteed when the intersection of the decomposed schemas functionally determines one of them. Dependency preservation is separate and not automatic: a decomposition can be lossless while pushing a constraint into a join that no single relation enforces."
+        }
+      ]
+    },
+    {
+      "note_id": "dbms-u3-transactions",
+      "title": "ACID Properties and Isolation Levels",
+      "kind": "lecture_notes",
+      "unit": "3",
+      "topic": "Transactions",
+      "tags": ["acid", "transaction", "isolation", "logging", "recovery"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-25T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 3.",
+          "content": "A transaction is a sequence of operations treated as one unit. ACID names the properties it guarantees.\n\nAtomicity is delivered by the write-ahead log: before any change reaches stable storage, a log record describing it is flushed. Recovery replays the log and undoes changes from transactions that never committed. Without the log-first rule, a crash mid-write can leave a state that corresponds to no committed transaction.\n\nConsistency is the application's responsibility. The database guarantees that each statement leaves the schema valid; the transaction as a whole satisfies whatever invariants the application defines, or it is rolled back.\n\nIsolation is concurrency control. Durability is achieved by forcing the log to stable storage at commit.\n\nIsolation levels trade concurrency against anomaly visibility. Read uncommitted permits dirty reads. Read committed forbids them but still permits non-repeatable reads, since a row may change between two reads in the same transaction. Repeatable read prevents that but can still permit phantoms, where a predicate match appears or disappears. Serializable prevents all three at the greatest cost, since it forces conflicting transactions to be ordered.\n\nChoosing a level is a business decision about which anomalies the application can tolerate and absorb, not a performance knob to be tuned blindly."
+        }
+      ]
+    },
+    {
+      "note_id": "dbms-u3-concurrency",
+      "title": "Locking, Two-Phase Locking and Deadlock",
+      "kind": "lecture_notes",
+      "unit": "3",
+      "topic": "Concurrency control",
+      "tags": ["locking", "2pl", "deadlock", "mvcc", "serializability"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-08-26T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 3.",
+          "content": "Shared locks permit concurrent readers and block writers; exclusive locks permit neither. Lock granularity trades precision against overhead: row locks reduce contention but multiply lock-table entries, table locks are cheap and coarse, and predicate or range locks are needed to prevent phantoms.\n\nTwo-phase locking requires a transaction to acquire all its locks before releasing any. If it holds a lock while waiting for another, the growing phase has ended, so a transaction that violates strict two-phase locking can be undone by cascading. Cascading abort is a strong argument for two-phase locking, since it lets the system release locks in reverse order during rollback.\n\nDeadlock arises when two transactions each hold what the other needs. Detection is a wait-for graph, where a cycle means deadlock; prevention orders resources so that a cycle cannot form, or uses timeouts. Both are necessary because no single policy is cheap in all cases.\n\nMulti-version concurrency control sidesteps locking for readers. Each transaction reads a snapshot chosen at its start, so readers never block and never see uncommitted data. Writers still conflict. MVCC trades storage, since old versions must be retained until every transaction that might read them finishes, for substantially better read concurrency."
+        }
+      ]
+    },
+    {
+      "note_id": "dbms-u4-indexing",
+      "title": "B-Trees and Query Optimisation",
+      "kind": "lecture_notes",
+      "unit": "4",
+      "topic": "Indexing",
+      "tags": ["index", "b-tree", "query-planner", "cost", "join"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-09-03T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 4.",
+          "content": "An index is a redundant structure that trades write cost and storage for read speed. Every insert and delete must also update every index on the table, and each index needs at least one page, so a table with many indexes on few rows can cost more to maintain than the table itself.\n\nA B-tree is the standard index because its height grows logarithmically and its branching factor is the page size, so a very wide tree is shallow. This is why B-trees dominate disk-oriented indexes while binary search trees, which are narrow, belong in memory.\n\nThe query optimiser enumerates candidate plans and estimates their cost from statistics: cardinality, distinct-value counts and correlation. It generally picks the cheapest estimated plan, which is not necessarily the fastest plan, because the estimate can be wrong. Cardinality misestimation, especially after correlated predicates on independent columns, is the most common cause of a query that is inexplicably slow on large data and fast on small.\n\nJoin order matters because the intermediate result size compounds. A nested-loop join is O(n * m) but is excellent when one side is tiny and indexed. A hash join is O(n + m) with a build cost and needs both inputs in memory. A merge join is O(n log n + m log m) and is the natural choice when both inputs are already sorted by the join key."
+        }
+      ]
+    },
+    {
+      "note_id": "dbms-u5-nosql",
+      "title": "Replication, Sharding and NoSQL Families",
+      "kind": "reference",
+      "unit": "5",
+      "topic": "Distributed databases",
+      "tags": ["replication", "sharding", "cap", "nosql", "consistency"],
+      "versions": [
+        {
+          "version": 1,
+          "author": "Course Faculty",
+          "created_at": "2026-09-29T09:00:00+00:00",
+          "changelog": "Initial lecture notes for Unit 5.",
+          "content": "Replication places copies on several nodes for availability and read scale. Synchronous replication waits for an acknowledgement before committing, so it cannot lose a committed write but pays latency and can become unavailable if a minority is unreachable. Asynchronous replication commits without waiting, which is fast and available but can lose the most recent writes on failover.\n\nSharding partitions data across nodes horizontally, so each shard holds a subset and queries fan out. The hard part is choosing a shard key: a poor choice creates cross-shard queries that negate the benefit. Cross-shard joins, distributed transactions and rebalancing are the recurring costs.\n\nThe CAP theorem states that a distributed system cannot simultaneously guarantee consistency, availability and partition tolerance. It is routinely misquoted. Partition tolerance is not a choice, since a network partition is always possible; the real choice is between consistency and availability during a partition. A CP system refuses to serve rather than serve stale data, and an AP system serves and accepts that it may serve stale data.\n\nNoSQL families trade generality for scale. Key-value stores give constant-time point reads. Document stores keep related data together and suit flexible schemas. Wide-column stores suit very large write-heavy tables and time-series. Graph stores optimise for multi-hop traversals, where a relational join would need recursion or multiple round trips.\n\nThe practical lesson is that these are not replacements for relational databases but answers to different access patterns. Choosing one usually means giving up transactions across records and joins across partitions."
+        }
+      ]
+    }
+  ]
+}

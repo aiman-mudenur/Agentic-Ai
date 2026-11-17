@@ -2,3 +2,11 @@
 port = 8501
 address = "localhost"
 headless = false
+
+[theme]
+base = "dark"
+primaryColor = "#729BFF"
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#111827"
+textColor = "#E5EDF7"
+font = "sans serif"

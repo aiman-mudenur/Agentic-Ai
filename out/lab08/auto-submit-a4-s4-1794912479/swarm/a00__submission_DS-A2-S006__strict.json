@@ -1,0 +1,73 @@
+{
+  "assignment_id": "ASG-02",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-02",
+    "awarded_marks": 15.56,
+    "criterion_ids": [
+      "correctness",
+      "tests",
+      "documentation"
+    ],
+    "criterion_marks": {
+      "correctness": 7.78,
+      "documentation": 2.33,
+      "tests": 5.45
+    },
+    "expected_late": false,
+    "feedback": "Draft only, pending faculty review. Provisional mark 15.56 of 20 (78%) for DS-A2-S006.",
+    "late": false,
+    "max_marks": 20.0,
+    "similarity_against": "",
+    "similarity_flagged": false,
+    "similarity_score": 0.0,
+    "student_name": "Sara Thomas",
+    "submission_id": "DS-A2-S006"
+  },
+  "item_id": "DS-A2-S006",
+  "key": "submission:DS-A2-S006",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-02",
+      "awarded_marks": 15.56,
+      "criterion_ids": [
+        "correctness",
+        "tests",
+        "documentation"
+      ],
+      "criterion_marks": {
+        "correctness": 7.78,
+        "documentation": 2.33,
+        "tests": 5.45
+      },
+      "expected_late": false,
+      "feedback": "Draft only, pending faculty review. Provisional mark 15.56 of 20 (78%) for DS-A2-S006.",
+      "late": false,
+      "max_marks": 20.0,
+      "similarity_against": "",
+      "similarity_flagged": false,
+      "similarity_score": 0.0,
+      "student_name": "Sara Thomas",
+      "submission_id": "DS-A2-S006"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 1.0,
+  "strategy": "strict",
+  "unit": "3"
+}

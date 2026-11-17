@@ -1,0 +1,99 @@
+{
+  "course_code": "DBMS402",
+  "course_name": "Database Management Systems",
+  "assignments": [
+    {
+      "assignment_id": "ASG-01",
+      "course_code": "DBMS402",
+      "unit": "1",
+      "title": "SQL Query Set",
+      "brief": "Answer the supplied multi-part query set covering selection, aggregation, multi-table joins and outer joins. For each query, state its relational algebra equivalent and identify any aggregate-after-join hazard present in the question.",
+      "release_date": "2026-10-08T00:00:00+00:00",
+      "due_date": "2026-10-22T23:59:00+00:00",
+      "max_marks": 15,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "Every query returns the required columns with correct filtering and grouping.",
+          "max_marks": 9.0,
+          "weight": 0.6
+        },
+        {
+          "criterion_id": "edge_cases",
+          "description": "NULL handling and empty-result cases handled deliberately.",
+          "max_marks": 3.0,
+          "weight": 0.2
+        },
+        {
+          "criterion_id": "readability",
+          "description": "Queries formatted and commented so intent is evident.",
+          "max_marks": 3.0,
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "assignment_id": "ASG-02",
+      "course_code": "DBMS402",
+      "unit": "2",
+      "title": "Normalisation Exercise",
+      "brief": "For each supplied relation, list the candidate keys and the functional dependencies, identify every violation of 3NF and of BCNF, and produce a lossless decomposition. State explicitly whether each decomposition preserves dependencies, and justify the answer.",
+      "release_date": "2026-10-22T00:00:00+00:00",
+      "due_date": "2026-11-05T23:59:00+00:00",
+      "max_marks": 20,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "Candidate keys, dependencies, violations and decompositions all correct.",
+          "max_marks": 10.0,
+          "weight": 0.5
+        },
+        {
+          "criterion_id": "justification",
+          "description": "Losslessness and dependency preservation proved rather than asserted.",
+          "max_marks": 6.0,
+          "weight": 0.3
+        },
+        {
+          "criterion_id": "examples",
+          "description": "Worked instances supplied for each claimed violation.",
+          "max_marks": 4.0,
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "assignment_id": "ASG-03",
+      "course_code": "DBMS402",
+      "unit": "3",
+      "title": "Transaction Schedule Analysis",
+      "brief": "For each supplied schedule, state which isolation level it is valid under, identify every anomaly it exhibits, and give a serial schedule that is equivalent to it. Explain whether two-phase locking would have prevented the anomalies and whether the schedule is recoverable.",
+      "release_date": "2026-11-05T00:00:00+00:00",
+      "due_date": "2026-11-19T23:59:00+00:00",
+      "max_marks": 20,
+      "approved_by": "course_faculty",
+      "rubric": [
+        {
+          "criterion_id": "correctness",
+          "description": "Anomalies identified and an equivalent serial schedule produced correctly.",
+          "max_marks": 11.0,
+          "weight": 0.55
+        },
+        {
+          "criterion_id": "analysis",
+          "description": "Isolation level and recoverability argued correctly.",
+          "max_marks": 6.0,
+          "weight": 0.3
+        },
+        {
+          "criterion_id": "conclusion",
+          "description": "Conclusion states plainly which claim is and is not justified.",
+          "max_marks": 3.0,
+          "weight": 0.15
+        }
+      ]
+    }
+  ]
+}

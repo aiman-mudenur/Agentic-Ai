@@ -31,3 +31,7 @@ class Note(SQLModel, table=True):
     size_bytes: int = Field(default=0)
     uploaded_by: int = Field(index=True)
     uploaded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source_url: Optional[str] = None  # Classroom/original link when there is no file
+    version: int = Field(default=1)
+    parent_note_id: Optional[int] = Field(default=None, foreign_key="note.id")
+    is_current: bool = Field(default=True)

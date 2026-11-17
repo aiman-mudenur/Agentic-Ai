@@ -1,0 +1,72 @@
+{
+  "assignment_id": "ASG-01",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-01",
+    "awarded_marks": 11.77,
+    "criterion_ids": [
+      "correctness",
+      "complexity_analysis",
+      "presentation"
+    ],
+    "criterion_marks": {
+      "complexity_analysis": 4.12,
+      "correctness": 5.88
+    },
+    "expected_late": false,
+    "feedback": "Draft only, pending faculty review. Provisional mark 11.77 of 20 (59%) for DS-A1-S004.",
+    "late": false,
+    "max_marks": 20.0,
+    "similarity_against": "",
+    "similarity_flagged": false,
+    "similarity_score": null,
+    "student_name": "Meera Nair",
+    "submission_id": "DS-A1-S004"
+  },
+  "item_id": "DS-A1-S004",
+  "key": "submission:DS-A1-S004",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-01",
+      "awarded_marks": 11.77,
+      "criterion_ids": [
+        "correctness",
+        "complexity_analysis",
+        "presentation"
+      ],
+      "criterion_marks": {
+        "complexity_analysis": 4.12,
+        "correctness": 5.88,
+        "presentation": 1.77
+      },
+      "expected_late": false,
+      "feedback": "Draft only, pending faculty review. Provisional mark 11.77 of 20 (59%) for DS-A1-S004.",
+      "late": false,
+      "max_marks": 20.0,
+      "similarity_against": "",
+      "similarity_flagged": false,
+      "similarity_score": 0.0,
+      "student_name": "Meera Nair",
+      "submission_id": "DS-A1-S004"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 0.2,
+  "strategy": "sparse",
+  "unit": "1"
+}

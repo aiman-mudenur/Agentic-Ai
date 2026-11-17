@@ -95,9 +95,9 @@ def test_a_clean_run_validates_on_its_first_pass(clean):
     assert tuple(report.checks_run) == DOC_CHECKS
 
 
-def test_all_four_doc_checks_actually_ran(clean):
-    """A report claiming four checks while running three is a silent gap."""
-    assert len(clean.state["validation"].checks_run) == 4
+def test_all_five_doc_checks_actually_ran(clean):
+    """A report claiming five checks while running four is a silent gap."""
+    assert len(clean.state["validation"].checks_run) == 5
 
 
 def test_every_node_appends_exactly_one_audit_entry(clean):

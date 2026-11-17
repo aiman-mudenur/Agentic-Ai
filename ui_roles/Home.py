@@ -1,24 +1,41 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Course Organizer", layout="wide", page_icon="🎓")
-st.title("🎓 Course Organizer")
-st.caption("Faculty / Student portal — real email login, files, auto-grading, live progress.")
+st.set_page_config(page_title="Course Organizer", layout="wide", page_icon="CO")
 
-col1, col2 = st.columns(2)
+from ui_helpers import topbar
+
+topbar()
+
+st.title("Course Organizer")
+st.caption("Role-based portal — email login, persistent data, live dashboards.")
+
+st.subheader("Role overview")
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.subheader("👩‍🏫 Faculty")
-    st.markdown("Upload **notes**, create **assignments**, see **live submission counts**, **auto-grade with the agent**, track class progress.")
-    st.markdown("Start here: **Faculty Dashboard** (login or sign up with your real email).")
+    with st.container(border=True):
+        st.markdown("**Faculty**")
+        st.markdown("Create assignments, grade submissions, upload notes, track class progress.")
+        st.markdown("Start here: **Faculty Dashboard**")
 with col2:
-    st.subheader("🧑‍🎓 Student")
-    st.markdown("View **assignments**, **download notes**, **submit files**, watch your **progress graphs update live** after each grading.")
-    st.markdown("Start here: **Student Dashboard** (login or sign up with your real email).")
+    with st.container(border=True):
+        st.markdown("**Student**")
+        st.markdown("View enrolled courses, submit assignments, download notes, see approved grades.")
+        st.markdown("Start here: **Student Dashboard**")
+with col3:
+    with st.container(border=True):
+        st.markdown("**Head of Department**")
+        st.markdown("Read-only overview: submission rates, late submissions, grade approvals, audit log.")
+        st.markdown("Start here: **HoD Dashboard**")
 
 st.divider()
-st.markdown("**Flow:** Faculty creates assignment → Student submits (swarm organises in backend automatically) → Faculty grades manually or via **Auto-grade agent** → Both sides see **live updates + graphs**.")
-st.success("Demo logins: faculty@gmail.com / faculty123 · student@gmail.com / student123 · admin@gmail.com / admin123")
+st.subheader("Workflow")
+st.markdown("**Flow:** Faculty creates assignment → Student submits (write-once) → Faculty grades (draft) → HoD/Faculty approves → Student sees published grade.")
 
+st.info("Go to the **Login** page and choose your role: **Student**, **Faculty**, **HoD**, or **Admin**. Sign in with your password or with Google — after login you are taken to your role's dashboard.")
+
+st.divider()
+st.subheader("System status")
 try:
     r = requests.get("http://127.0.0.1:8000/health", timeout=5)
     if r.ok:

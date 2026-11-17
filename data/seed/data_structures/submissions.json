@@ -1,0 +1,73 @@
+{
+  "course_code": "CS201",
+  "course_name": "Data Structures",
+  "term": "2026 - Semester I",
+  "provenance": "seed:data_structures/submissions.json",
+  "derivation_note": "Only facts of collection are stored here: who submitted what, and when. `status` and `late_by_seconds` are deliberately absent, because they are DERIVED by LocalSeedStore.read_submissions from submitted_at against the assignment's due_date. A number that is typed by hand is a number that can be wrong.",
+  "submissions": [
+    {
+      "submission_id": "DS-A1-S001",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS014",
+      "student_name": "Aarav Menon",
+      "submitted_at": "2026-10-19T18:42:00+05:30",
+      "content": "My singly linked list stores each element in a Node holding a value and a next reference. append walks the list to the last node and links the new node there, so it costs O(n) time and O(1) extra space. insert_after and delete_after take a predecessor, so they run in O(1) once that node is in hand. Reversal is done in place: I keep prev, curr and next pointers, advance until curr is null, then relink the head. For the doubly linked list each node also holds a prev reference, so delete_after can unlink a node given only that node itself, and I can walk backwards from the tail. The trade-off is one extra pointer per node and the extra bookkeeping to keep both directions consistent after every insertion and deletion."
+    },
+    {
+      "submission_id": "DS-A1-S002",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS031",
+      "student_name": "Diya Kulkarni",
+      "submitted_at": "2026-10-20T09:15:00+05:30",
+      "content": "I used a circular singly linked list with a sentinel head, so append and insert-after are both O(1) without walking. Deletion of the first element is therefore the same code as deletion of any other element. Reversal is still O(n) and I implemented it with the standard three-pointer walk, updating the sentinel at the end so the list stays circular. The extra pointer makes append cheaper than the textbook O(n) version at the cost of a slightly more subtle loop invariant. For the doubly linked version I kept the sentinel doubly linked too, which let me write a delete operation that takes the node to remove rather than its predecessor, at the price of maintaining four pointer assignments per deletion instead of two."
+    },
+    {
+      "submission_id": "DS-A1-S003",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS047",
+      "student_name": "Kabir Shah",
+      "submitted_at": "2026-10-20T22:03:00+05:30",
+      "content": "My singly linked list stores each element in a Node holding a value and a next reference. append walks the list to the last node and links the new node to it, so it costs O(n) time and O(1) extra space. insert-after and delete-after take a predecessor, so they run in O(1) once that node is in hand. Reversal is done in place: I keep prev, curr and next pointers, advance until curr is null, then relink the head. For the doubly linked list each node also holds a prev reference, so delete-after can unlink a node given only that node itself, and I can walk backwards from the tail. The trade-off is one extra pointer per node and the extra bookkeeping to keep both directions consistent after every insertion and deletion."
+    },
+    {
+      "submission_id": "DS-A1-S004",
+      "assignment_id": "ASG-01",
+      "student_id": "23CS058",
+      "student_name": "Meera Nair",
+      "submitted_at": "2026-10-18T21:30:00+05:30",
+      "content": "I compared two designs. The first stores the length in the head node and supports O(1) size queries but needs that field updated on every removal, which is easy to get wrong. The second omits the length and computes size on demand in O(n), which is slower but cannot fall out of sync. I chose the first and wrote a helper that decrements the count in exactly one place so the two cannot diverge. For deletion I read the value before unlinking rather than after, since the payload becomes unreachable once the link is severed. My test set covers the empty list, a single element, head deletion, tail deletion, middle deletion, duplicates, and reversal of a list that is already empty."
+    },
+    {
+      "submission_id": "DS-A2-S005",
+      "assignment_id": "ASG-02",
+      "student_id": "23CS022",
+      "student_name": "Rohan Pillai",
+      "submitted_at": "2026-11-02T14:05:00+05:30",
+      "content": "Insertion descends from the root, comparing keys, until it finds a null child and links the new node there, so insertion is O(h). Search uses the same descent. Minimum walks the left spine. In-order traversal is recursive and emits keys in sorted order, which my test uses to confirm the invariant after every operation. Deletion has three cases: a leaf is unlinked, a node with one child is spliced out, and a node with two children takes the in-order successor which is copied into the target position. Height is the worst case, so a degenerate tree of n nodes costs O(n) per operation, and my test set includes a sorted insertion order to demonstrate that."
+    },
+    {
+      "submission_id": "DS-A2-S006",
+      "assignment_id": "ASG-02",
+      "student_id": "23CS063",
+      "student_name": "Sara Thomas",
+      "submitted_at": "2026-11-03T11:48:00+05:30",
+      "content": "I built the tree from a sorted list on purpose to show the degenerate case first, then rebuilt it from a shuffled list to show the balanced case. That made the cost model obvious: with sorted input every node has a single child and each operation is O(n), while shuffled input keeps the height near log n. For deletion of a two-child node I preferred rotating a child up over copying the successor, because rotation keeps the node identity stable for any references held elsewhere. I benchmarked insert, search and delete over a thousand random keys after each rebuild and reported the totals."
+    },
+    {
+      "submission_id": "DS-A3-S007",
+      "assignment_id": "ASG-03",
+      "student_id": "23CS009",
+      "student_name": "Vivaan Rao",
+      "submitted_at": "2026-11-16T19:20:00+05:30",
+      "content": "Dijkstra keeps a priority queue of tentative distances and repeatedly extracts the smallest one. When the extracted key is already finalised it is skipped. Relaxation updates the neighbour's distance and decreases the key, which is why an indexed binary heap beats a plain lazy heap here. The algorithm fails on a negative edge because a node may be finalised and then later improved. I demonstrated this with a three-vertex graph containing one negative edge and traced the wrong extraction order. On a non-negative graph the number of decrease-key operations is bounded by the number of edges, giving O((V + E) log V)."
+    },
+    {
+      "submission_id": "DS-A3-S008",
+      "assignment_id": "ASG-03",
+      "student_id": "23CS071",
+      "student_name": "Ananya Bose",
+      "submitted_at": "2026-11-18T08:10:00+05:30",
+      "content": "I implemented single-source shortest paths with Dijkstra over an adjacency matrix representation, and separately over an adjacency list, then compared the running time. The matrix version scans a full row per extraction which is O(V squared) overall; the list version with a binary heap is O((V + E) log V). I also traced the Bellman-Ford result on the same graph to show the relaxation order that Dijkstra cannot handle when an edge weight is negative. My report includes the extraction order, the number of relaxations attempted, and the final distance table for each source vertex."
+    }
+  ]
+}

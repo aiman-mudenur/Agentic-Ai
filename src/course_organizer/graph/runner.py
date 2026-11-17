@@ -30,7 +30,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -315,6 +315,8 @@ def run_pipeline(
     output_dir: Optional[Path] = None,
     root: Optional[Path] = None,
     fail_until_attempt: int = 0,
+    authorized_plan: Optional[Mapping[str, Any]] = None,
+    domain: str = "theory",
 ) -> GraphRun:
     """Build the graph, run it to the gate, and return the handle.
 
@@ -328,6 +330,10 @@ def run_pipeline(
         fail_until_attempt: Injects the validation defect for the first
             ``fail_until_attempt - 1`` passes so the back-edge can be
             demonstrated. ``0`` (the default) runs clean.
+        authorized_plan: An already-verified locked plan dump to execute
+            under. Forwarded into the graph seed untouched; the plan node
+            re-verifies and adopts it. Omitted means today's behavior.
+            Exactly: the plan node's ``authorized_plan`` state key.
 
     Returns:
         The :class:`GraphRun`, stopped at the gate.
@@ -359,7 +365,9 @@ def run_pipeline(
     saver = None
     with open_checkpointer(checkpoint_path(base, run_id)) as saver:
         graph = build_graph(ctx, checkpointer=saver)
-        run.start(graph, fail_until_attempt=fail_until_attempt)
+        seed_extra = {"authorized_plan": dict(authorized_plan)} if isinstance(
+            authorized_plan, Mapping) and authorized_plan else {}
+        run.start(graph, fail_until_attempt=fail_until_attempt, domain=domain, **seed_extra)
     return run
 
 

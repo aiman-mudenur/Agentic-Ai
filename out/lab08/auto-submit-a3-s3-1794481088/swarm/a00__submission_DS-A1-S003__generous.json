@@ -1,0 +1,73 @@
+{
+  "assignment_id": "ASG-01",
+  "attempt": 0,
+  "content": {
+    "assignment_id": "ASG-01",
+    "awarded_marks": 20.77,
+    "criterion_ids": [
+      "correctness",
+      "complexity_analysis",
+      "presentation"
+    ],
+    "criterion_marks": {
+      "complexity_analysis": 7.27,
+      "correctness": 10.38,
+      "presentation": 3.11
+    },
+    "expected_late": false,
+    "feedback": "Draft only, pending faculty review. Provisional mark 18.88 of 20 (94%) for DS-A1-S003.",
+    "late": false,
+    "max_marks": 20.0,
+    "similarity_against": "DS-A1-S001",
+    "similarity_flagged": true,
+    "similarity_score": 1.0,
+    "student_name": "Kabir Shah",
+    "submission_id": "DS-A1-S003"
+  },
+  "item_id": "DS-A1-S003",
+  "key": "submission:DS-A1-S003",
+  "kind": "submission",
+  "priority": 2,
+  "provenance": {
+    "base": {
+      "assignment_id": "ASG-01",
+      "awarded_marks": 18.88,
+      "criterion_ids": [
+        "correctness",
+        "complexity_analysis",
+        "presentation"
+      ],
+      "criterion_marks": {
+        "complexity_analysis": 6.61,
+        "correctness": 9.44,
+        "presentation": 2.83
+      },
+      "expected_late": false,
+      "feedback": "Draft only, pending faculty review. Provisional mark 18.88 of 20 (94%) for DS-A1-S003.",
+      "late": false,
+      "max_marks": 20.0,
+      "similarity_against": "DS-A1-S001",
+      "similarity_flagged": true,
+      "similarity_score": 1.0,
+      "student_name": "Kabir Shah",
+      "submission_id": "DS-A1-S003"
+    },
+    "plan_scope": {
+      "assignment_ids": [
+        "ASG-01",
+        "ASG-02",
+        "ASG-03"
+      ],
+      "units": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    }
+  },
+  "self_reported_alignment": 0.6,
+  "strategy": "generous",
+  "unit": "1"
+}
